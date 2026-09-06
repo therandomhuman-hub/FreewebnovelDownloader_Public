@@ -156,7 +156,8 @@ jobs:
           path: results
           merge-multiple: false
 
-      - name: Validate worker results
+      - name: Assess worker results
+        id: result_check
         env:
           EXPECTED_WORKERS: ${{ github.event_name == 'schedule' && '20' || '1' }}
           EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
@@ -165,26 +166,30 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(find results -type f -name worker_result.json | sort)
-          test "${#files[@]}" -eq "$EXPECTED_WORKERS" || {
-            echo "Expected $EXPECTED_WORKERS worker result files, found ${#files[@]}"
-            exit 1
-          }
+          count=${#files[@]}
+          complete=false
+          echo "Found $count worker result file(s); expected $EXPECTED_WORKERS."
           declare -A seen_workers=()
+          invalid=0
           for f in "${files[@]}"; do
             rid=$(jq -r '.workflow_id // -1' "$f")
             run=$(jq -r '.run_index // -1' "$f")
-            test "$run" = "$EXPECTED_RUN_INDEX" || { echo "Wrong run_index in $f: $run"; exit 1; }
-            if [[ "$rid" -lt 0 || "$rid" -gt 19 ]]; then
-              echo "Invalid worker id in $f: $rid"; exit 1
+            [[ "$run" = "$EXPECTED_RUN_INDEX" ]] || { echo "Ignoring wrong run_index file: $f ($run)"; invalid=$((invalid+1)); continue; }
+            if [[ "$rid" -lt 0 || "$rid" -gt 19 || -n "${seen_workers[$rid]+x}" ]]; then
+              echo "Ignoring invalid/duplicate worker result: $f (worker=$rid)"
+              invalid=$((invalid+1))
+              continue
             fi
-            test -z "${seen_workers[$rid]+x}" || { echo "Duplicate worker result: $rid"; exit 1; }
             seen_workers[$rid]=1
           done
           if [[ "$EXPECTED_WORKERS" = "1" ]]; then
-            test -n "${seen_workers[$EXPECTED_MANUAL_WORKER]+x}" || { echo "Manual worker result missing: $EXPECTED_MANUAL_WORKER"; exit 1; }
+            [[ -n "${seen_workers[$EXPECTED_MANUAL_WORKER]+x}" ]] && complete=true
           else
-            test "${#seen_workers[@]}" -eq 20 || { echo "Scheduled run did not produce all 20 workers"; exit 1; }
+            [[ "$invalid" -eq 0 && "${#seen_workers[@]}" -eq 20 ]] && complete=true
           fi
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+          echo "valid_workers=${#seen_workers[@]}" >> "$GITHUB_OUTPUT"
+          echo "invalid_results=$invalid" >> "$GITHUB_OUTPUT"
 
       - name: Update Google Sheet
         working-directory: private-engine
@@ -204,7 +209,7 @@ jobs:
           retention-days: 7
 
       - name: Advance scheduler state
-        if: ${{ success() && github.event_name == 'schedule' && needs.worker.result == 'success' }}
+        if: ${{ success() && github.event_name == 'schedule' && needs.worker.result == 'success' && steps.result_check.outputs.complete == 'true' }}
         working-directory: scheduler-state
         shell: bash
         env:
