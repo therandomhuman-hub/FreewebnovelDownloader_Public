@@ -18,7 +18,7 @@ The workflow runs every 6 hours at 15 minutes past the hour: 00:15, 06:15, 12:15
 
 ## Scheduling and duplicate protection
 
-Each run index maps to a disjoint 200-URL block (20 workers × 10 URLs). The private source loader validates FreeWebNovel URLs, normalizes them, and removes duplicates before assigning deterministic unique indexes. After the final block, a new cycle begins, so ongoing novels are revisited automatically.
+Each run index maps to a disjoint 200-URL block (20 workers × 10 URLs). The private source loader validates FreeWebNovel URLs, normalizes them, and removes duplicate entries before assigning deterministic unique indexes. After the final block, a new cycle begins, so ongoing novels are revisited automatically.
 
 ## Source and storage
 
@@ -26,30 +26,34 @@ Master source list:
 
 `FreewebnovelDownloader_Private/data/scraped_novels.json`
 
-Dropbox output folder:
+Google Drive output folder:
 
-`/WebNovel`
+`My Drive/Webnovel`
 
-Dropbox is used for downloaded EPUB novels and spreadsheet files only. The source URL list is not stored in Dropbox.
+Google Drive is the novel-file storage layer. Dropbox is no longer used by the production downloader.
 
 ## Processing rules
 
 For every assigned URL, the engine reads the explicit status from the novel's own FreeWebNovel page metadata.
 
-- `Completed` / `Complete` / `Finished` → eligible for EPUB generation and Dropbox upload.
+- `Completed` / `Complete` / `Finished` → eligible for EPUB generation and Google Drive upload.
 - `Ongoing` → tracked, not downloaded.
 - `Unknown` / missing status → tracked, not downloaded.
 - Metadata/download errors → tracked and retried in a later cycle.
 
 Before an EPUB is accepted, its converter chapter count is compared with the source page chapter count.
 
+## Google Drive
+
+Workers authenticate with the configured Google user OAuth credentials and upload EPUBs into the configured `GOOGLE_DRIVE_FOLDER_ID`. Before generation/upload, the engine checks that folder for an existing `<novel-slug>.epub` and records the existing Drive file instead of creating a duplicate.
+
 ## Google Sheet
 
-The workflow updates the existing `Sheet1` tab. Only the tracker job writes the sheet, preventing 20-worker append races.
+The workflow updates the existing `Sheet1` tab. Only the tracker job writes the sheet, preventing 20-worker append races. Tracker columns include Google Drive path, file ID, and file URL.
 
 ## Preflight and safety
 
-Every worker compiles the Python entrypoints and runs `self_check.py` before external processing. The self-check validates source JSON integrity, URL uniqueness, and the 20-worker partition model without contacting external services.
+Every worker compiles the Python entrypoints and runs `self_check.py` before external processing. The health check validates source JSON integrity, Google Sheet access, Google Drive OAuth/folder access, and basic FreeWebNovel reachability.
 
 ## Manual test
 
@@ -67,8 +71,13 @@ This checks exactly one worker's 10 URLs, creates tracker results, and does not 
 ## Secrets
 
 - `PRIVATE_REPO_TOKEN` — GitHub token/PAT with read access to the private repository.
-- `DROPBOX_ACCESS_TOKEN` — Dropbox API token with write access to `/WebNovel`.
-- `GOOGLE_SERVICE_ACCOUNT_JSON` — complete Google service-account JSON.
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — service-account JSON used for the Google Sheet.
 - `GOOGLE_SHEET_ID` — ID of the existing Google spreadsheet.
+- `GOOGLE_DRIVE_CLIENT_ID` — OAuth client ID for Drive user access.
+- `GOOGLE_DRIVE_CLIENT_SECRET` — OAuth client secret for Drive user access.
+- `GOOGLE_DRIVE_REFRESH_TOKEN` — OAuth refresh token for unattended Drive access.
+- `GOOGLE_DRIVE_FOLDER_ID` — ID of the `Webnovel` Drive folder.
+
+`GOOGLE_SHEET_SHARE_EMAIL` may remain configured for compatibility, but the existing spreadsheet is accessed using the service account configured above.
 
 Only use this system for material you are authorized to download and archive, and comply with applicable terms and copyright law.
