@@ -39,7 +39,7 @@ The engine also validates the converter's chapter count against the source page 
 
 ## Google Sheet
 
-The tracker sheet tab is `Novels` by default. Workers write to fixed source-index rows, allowing the 20 workers to update different rows concurrently without append-order races.
+The existing tracker sheet tab used by the workflow is `Sheet1`. Workers write to fixed source-index rows, allowing the 20 workers to update different rows concurrently without append-order races.
 
 ## Actions secrets
 
