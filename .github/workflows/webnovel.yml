@@ -112,6 +112,12 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
 
+      - name: Checkout public scheduler state
+        uses: actions/checkout@v4
+        with:
+          path: scheduler-state
+          fetch-depth: 1
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -153,12 +159,12 @@ jobs:
 
       - name: Advance scheduler state
         if: ${{ github.event_name == 'schedule' && needs.worker.result == 'success' }}
+        working-directory: scheduler-state
         shell: bash
         env:
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
         run: |
           set -euo pipefail
-          git checkout --detach HEAD
           jq --argjson next "$((RUN_INDEX + 1))" \
              --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              --argjson completed "$RUN_INDEX" \
