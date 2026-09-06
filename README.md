@@ -1,18 +1,24 @@
 # FreeWebNovel Downloader — Public Scheduler
 
-The public repository contains the GitHub Actions scheduler only. The downloader engine and master novel URL list remain in the private repository `therandomhuman-hub/FreewebnovelDownloader_Private`.
+The public repository contains the GitHub Actions scheduler and a small non-secret scheduler state file. The downloader engine and master novel URL list remain in the private repository `therandomhuman-hub/FreewebnovelDownloader_Private`.
 
 ## Production workflow
 
 There is one workflow: `.github/workflows/webnovel.yml`.
 
-It uses a 20-worker matrix and runs every 6 hours at 15 minutes past the hour: 00:15, 06:15, 12:15, and 18:15 UTC. Each worker receives two batches of 5 unique URLs, for 10 URLs per run. Fleet capacity is therefore 20 × 4 × 10 = 800 URL checks per day.
+A coordinator reads `state/scheduler_state.json` and assigns one deterministic `run_index`. A 20-worker matrix then processes that same run index in parallel. Each worker receives two batches of 5 unique URLs, for 10 URLs per run. The full fleet targets 20 × 4 × 10 = 800 URL checks per day.
 
-The workers only process their assigned slice. They write `worker_result.json` artifacts and never write to Google Sheets directly. A single tracker job waits for the worker matrix, downloads the results, and runs `sheet_aggregator.py`, so spreadsheet writes are serialized and deterministic.
+Workers produce `worker_result.json` artifacts and never write Google Sheets directly. A single tracker job runs after the matrix and executes `sheet_aggregator.py`, serializing tracker updates into one operation.
+
+The scheduler state advances only when the scheduled worker matrix succeeds. If a worker fails, the run index is not advanced, so the same 200-URL block is retried on the next scheduled execution. Dropbox duplicate protection prevents successful novels from being downloaded twice.
+
+## Schedule
+
+The workflow runs every 6 hours at 15 minutes past the hour: 00:15, 06:15, 12:15, and 18:15 UTC.
 
 ## Scheduling and duplicate protection
 
-The private engine uses six-hour slots. Each slot is a disjoint 200-URL block: 20 workers × 10 URLs. URLs are normalized and deduplicated before assignment. After the final block, the next cycle starts at the beginning of the list. This gives repeated checks for ongoing novels without relying on a calendar-month reset.
+Each run index maps to a disjoint 200-URL block (20 workers × 10 URLs). The private source loader normalizes URLs and removes duplicates before assigning deterministic unique indexes. After the final block, a new cycle begins. This means ongoing novels are revisited automatically without relying on a calendar-month reset.
 
 ## Source and storage
 
@@ -24,22 +30,22 @@ Dropbox output folder:
 
 `/WebNovel`
 
-Dropbox is for downloaded EPUB novels and spreadsheet files only. The source URL list is not stored in Dropbox.
+Dropbox is used for downloaded EPUB novels and spreadsheet files only. The source URL list is not stored in Dropbox.
 
 ## Processing rules
 
 For every assigned URL, the engine reads the explicit status from the novel's own FreeWebNovel page metadata.
 
-- `Completed` / `Complete` / `Finished` → EPUB generation and Dropbox upload.
+- `Completed` / `Complete` / `Finished` → eligible for EPUB generation and Dropbox upload.
 - `Ongoing` → tracked, not downloaded.
 - `Unknown` / missing status → tracked, not downloaded.
-- Metadata or download errors → tracked for a later cycle.
+- Metadata/download errors → tracked and retried in a later cycle.
 
-Before an EPUB is accepted, the converter's chapter count is checked against the source page.
+Before an EPUB is accepted, its converter chapter count is compared with the source page chapter count.
 
 ## Google Sheet
 
-The current workflow updates the existing `Sheet1` tab. The tracker job matches rows by normalized URL and performs all updates/appends in one serialized step.
+The workflow updates the existing `Sheet1` tab. The tracker job matches results by normalized URL, updates existing rows, and appends new rows. Because only the tracker job writes the sheet, the 20 workers cannot race over append order.
 
 ## Manual test
 
@@ -52,7 +58,7 @@ worker_id = 0
 dry_run = true
 ```
 
-This checks the first 10 URLs, reads their source metadata, and updates the tracker without generating or uploading EPUBs.
+This uses the current scheduler state, checks exactly that worker's 10 URLs, writes tracker results, and does not generate or upload EPUBs. Manual runs do not advance scheduler state.
 
 ## Secrets
 
