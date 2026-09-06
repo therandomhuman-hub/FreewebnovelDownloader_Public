@@ -2,17 +2,17 @@
 
 The public repository contains the GitHub Actions scheduler only. The downloader engine and master novel URL list remain in the private repository `therandomhuman-hub/FreewebnovelDownloader_Private`.
 
-## Architecture
+## Production workflow
 
-There is one workflow, `.github/workflows/webnovel.yml`, using a 20-worker matrix. Scheduled executions run all 20 workers in parallel; manual executions can run a single worker and optionally use dry-run mode.
+There is one workflow: `.github/workflows/webnovel.yml`.
 
-## Schedule
+It uses a 20-worker matrix and runs every 6 hours at 15 minutes past the hour: 00:15, 06:15, 12:15, and 18:15 UTC. Each worker receives two batches of 5 unique URLs, for 10 URLs per run. Fleet capacity is therefore 20 × 4 × 10 = 800 URL checks per day.
 
-The workflow runs every 6 hours at 15 minutes past the hour: 00:15, 06:15, 12:15, and 18:15 UTC. This gives 4 scheduled runs per day.
+The workers only process their assigned slice. They write `worker_result.json` artifacts and never write to Google Sheets directly. A single tracker job waits for the worker matrix, downloads the results, and runs `sheet_aggregator.py`, so spreadsheet writes are serialized and deterministic.
 
-Each worker processes two batches of 5 URLs, for 10 URLs per worker run. The full fleet therefore has a target capacity of 20 × 4 × 10 = 800 URL checks per day.
+## Scheduling and duplicate protection
 
-The private engine uses a deterministic six-hour slot and cycle calculation. Every cycle partitions the source list into disjoint 200-URL blocks, then assigns 10 URLs to each worker. When the end of the list is reached, the next cycle starts again from the beginning. Duplicate URLs are removed before scheduling, so the same normalized novel URL is not assigned twice within a cycle.
+The private engine uses six-hour slots. Each slot is a disjoint 200-URL block: 20 workers × 10 URLs. URLs are normalized and deduplicated before assignment. After the final block, the next cycle starts at the beginning of the list. This gives repeated checks for ongoing novels without relying on a calendar-month reset.
 
 ## Source and storage
 
@@ -20,37 +20,45 @@ Master source list:
 
 `FreewebnovelDownloader_Private/data/scraped_novels.json`
 
-Dropbox storage:
+Dropbox output folder:
 
 `/WebNovel`
 
-Dropbox is used for downloaded EPUB novels and spreadsheet files only. The source URL list is not stored in Dropbox.
+Dropbox is for downloaded EPUB novels and spreadsheet files only. The source URL list is not stored in Dropbox.
 
 ## Processing rules
 
-For every assigned URL, the engine reads the novel's own FreeWebNovel page and extracts an explicit status label.
+For every assigned URL, the engine reads the explicit status from the novel's own FreeWebNovel page metadata.
 
-- `Completed` / `Complete` / `Finished` → eligible for EPUB generation and Dropbox upload.
+- `Completed` / `Complete` / `Finished` → EPUB generation and Dropbox upload.
 - `Ongoing` → tracked, not downloaded.
 - `Unknown` / missing status → tracked, not downloaded.
-- Metadata or download errors → tracked and retried in a later cycle.
+- Metadata or download errors → tracked for a later cycle.
 
-The engine also validates the converter's chapter count against the source page before accepting an EPUB.
+Before an EPUB is accepted, the converter's chapter count is checked against the source page.
 
 ## Google Sheet
 
-The existing tracker sheet tab used by the workflow is `Sheet1`. Workers write to fixed source-index rows, allowing the 20 workers to update different rows concurrently without append-order races.
+The current workflow updates the existing `Sheet1` tab. The tracker job matches rows by normalized URL and performs all updates/appends in one serialized step.
 
-## Actions secrets
+## Manual test
 
-| Secret | Purpose |
-|---|---|
-| `PRIVATE_REPO_TOKEN` | GitHub token/PAT with read access to the private repository |
-| `DROPBOX_ACCESS_TOKEN` | Dropbox API token with write access |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Complete Google service-account JSON |
-| `GOOGLE_SHEET_ID` | Existing Google spreadsheet ID used as the tracker |
-| `GOOGLE_SHEET_SHARE_EMAIL` | Optional account email used by older sheet-creation flows |
+Use **Actions → WebNovel Downloader → Run workflow**.
 
-Manual testing is available through **Actions → WebNovel Downloader → Run workflow**. Set `worker_id` to `0` and `dry_run` to `true` to perform a metadata-only test without generating or uploading EPUBs.
+Recommended first test:
+
+```text
+worker_id = 0
+dry_run = true
+```
+
+This checks the first 10 URLs, reads their source metadata, and updates the tracker without generating or uploading EPUBs.
+
+## Secrets
+
+- `PRIVATE_REPO_TOKEN` — GitHub token/PAT with read access to the private repository.
+- `DROPBOX_ACCESS_TOKEN` — Dropbox API token with write access to `/WebNovel`.
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — complete Google service-account JSON.
+- `GOOGLE_SHEET_ID` — ID of the existing Google spreadsheet.
 
 Only use this system for material you are authorized to download and archive, and comply with applicable terms and copyright law.
