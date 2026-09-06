@@ -144,6 +144,16 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: python novel_automator.py
 
+      - name: Fail on download/upload errors
+        working-directory: private-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f worker_result.json
+          failed=$(jq -r '.failed // 0' worker_result.json)
+          echo "Worker reported failed downloads/uploads: $failed"
+          test "$failed" -eq 0
+
       - name: Upload worker result
         if: always()
         uses: actions/upload-artifact@v4
