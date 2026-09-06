@@ -63,6 +63,7 @@ jobs:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -97,7 +98,7 @@ jobs:
           WORKFLOW_COUNT: "20"
           BATCH_SIZE: "5"
           BATCHES_PER_RUN: "2"
-          METADATA_WORKERS: "5"
+          METADATA_WORKERS: "1"
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: python novel_automator.py
@@ -125,6 +126,7 @@ jobs:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
+          persist-credentials: false
 
       - name: Checkout public scheduler state
         uses: actions/checkout@v4
