@@ -8,9 +8,9 @@ There is one workflow: `.github/workflows/webnovel.yml`.
 
 A coordinator reads `state/scheduler_state.json` and assigns one deterministic `run_index`. A 20-worker matrix then processes that same run index in parallel. Each worker receives two batches of 5 unique URLs, for 10 URLs per run. The full fleet targets 20 × 4 × 10 = 800 URL checks per day.
 
-Workers produce `worker_result.json` artifacts and never write Google Sheets directly. A single tracker job runs after the matrix and executes `sheet_aggregator.py`, serializing tracker updates into one operation.
+Workers produce `worker_result.json` artifacts and never write Google Sheets directly. A single tracker job validates the expected worker results and runs `sheet_aggregator.py`, serializing tracker updates into one operation.
 
-The scheduler state advances only when the scheduled worker matrix succeeds. If a worker fails, the run index is not advanced, so the same 200-URL block is retried on the next scheduled execution. Dropbox duplicate protection prevents successful novels from being downloaded twice.
+The scheduler state advances only after the scheduled worker matrix succeeds, all expected worker results are present and consistent, and the Google Sheet update succeeds. A tracker/state failure leaves the current run index unchanged for retry.
 
 ## Schedule
 
@@ -18,7 +18,7 @@ The workflow runs every 6 hours at 15 minutes past the hour: 00:15, 06:15, 12:15
 
 ## Scheduling and duplicate protection
 
-Each run index maps to a disjoint 200-URL block (20 workers × 10 URLs). The private source loader normalizes URLs and removes duplicates before assigning deterministic unique indexes. After the final block, a new cycle begins. This means ongoing novels are revisited automatically without relying on a calendar-month reset.
+Each run index maps to a disjoint 200-URL block (20 workers × 10 URLs). The private source loader validates FreeWebNovel URLs, normalizes them, and removes duplicates before assigning deterministic unique indexes. After the final block, a new cycle begins, so ongoing novels are revisited automatically.
 
 ## Source and storage
 
@@ -45,7 +45,11 @@ Before an EPUB is accepted, its converter chapter count is compared with the sou
 
 ## Google Sheet
 
-The workflow updates the existing `Sheet1` tab. The tracker job matches results by normalized URL, updates existing rows, and appends new rows. Because only the tracker job writes the sheet, the 20 workers cannot race over append order.
+The workflow updates the existing `Sheet1` tab. Only the tracker job writes the sheet, preventing 20-worker append races.
+
+## Preflight and safety
+
+Every worker compiles the Python entrypoints and runs `self_check.py` before external processing. The self-check validates source JSON integrity, URL uniqueness, and the 20-worker partition model without contacting external services.
 
 ## Manual test
 
@@ -58,7 +62,7 @@ worker_id = 0
 dry_run = true
 ```
 
-This uses the current scheduler state, checks exactly that worker's 10 URLs, writes tracker results, and does not generate or upload EPUBs. Manual runs do not advance scheduler state.
+This checks exactly one worker's 10 URLs, creates tracker results, and does not generate or upload EPUBs. Manual runs never advance scheduler state.
 
 ## Secrets
 
