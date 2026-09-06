@@ -16,15 +16,35 @@ on:
     - cron: "15 0,6,12,18 * * *"
 
 permissions:
-  contents: read
+  contents: write
 
-# Keep only one complete run active at a time.
+# Keep one complete run active at a time. A delayed run queues instead of overlapping.
 concurrency:
   group: webnovel-downloader
   cancel-in-progress: false
 
 jobs:
+  coordinator:
+    runs-on: ubuntu-latest
+    outputs:
+      run_index: ${{ steps.state.outputs.run_index }}
+    steps:
+      - name: Checkout scheduler state
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read run state
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_index=$(jq -r '.run_index // 0' state/scheduler_state.json)
+          echo "run_index=${run_index}" >> "$GITHUB_OUTPUT"
+          echo "Using deterministic run_index=${run_index}"
+
   worker:
+    needs: coordinator
     if: github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')
     runs-on: ubuntu-latest
     timeout-minutes: 330
@@ -66,6 +86,7 @@ jobs:
           BATCH_SIZE: "5"
           BATCHES_PER_RUN: "2"
           METADATA_WORKERS: "5"
+          RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: python novel_automator.py
 
@@ -79,8 +100,8 @@ jobs:
           retention-days: 7
 
   tracker:
+    needs: [coordinator, worker]
     if: ${{ always() && needs.worker.result != 'cancelled' }}
-    needs: worker
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -129,3 +150,23 @@ jobs:
           path: private-engine/tracker_summary.json
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Advance scheduler state
+        if: ${{ github.event_name == 'schedule' && needs.worker.result == 'success' }}
+        shell: bash
+        env:
+          RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+        run: |
+          set -euo pipefail
+          git checkout --detach HEAD
+          jq --argjson next "$((RUN_INDEX + 1))" \
+             --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             --argjson completed "$RUN_INDEX" \
+             '.run_index = $next | .last_completed_run_index = $completed | .last_completed_at = $now' \
+             state/scheduler_state.json > state/scheduler_state.tmp
+          mv state/scheduler_state.tmp state/scheduler_state.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/scheduler_state.json
+          git commit -m "Advance WebNovel scheduler state to run $((RUN_INDEX + 1))"
+          git push origin HEAD:main
