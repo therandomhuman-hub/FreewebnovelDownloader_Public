@@ -64,6 +64,7 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_SHARE_EMAIL: ${{ secrets.GOOGLE_SHEET_SHARE_EMAIL }}
           GOOGLE_SHEET_NAME: Novels
+          NOVEL_SOURCE_FILE: ../data/scraped_novels.json
           METADATA_WORKERS: '8'
         run: python novel_automator.py
 
