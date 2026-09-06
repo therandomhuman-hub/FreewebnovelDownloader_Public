@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       worker_id:
-        description: "Worker to run manually (0-19); scheduled runs execute all 20"
+        description: "Worker to run manually (0-19)"
         required: false
         default: "0"
       dry_run:
@@ -17,6 +17,11 @@ on:
 
 permissions:
   contents: read
+
+# Prevent a delayed run from overlapping the next scheduled run.
+concurrency:
+  group: webnovel-downloader
+  cancel-in-progress: false
 
 jobs:
   worker:
@@ -51,10 +56,6 @@ jobs:
         working-directory: private-engine
         env:
           DROPBOX_ACCESS_TOKEN: ${{ secrets.DROPBOX_ACCESS_TOKEN }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_SHEET_SHARE_EMAIL: ${{ secrets.GOOGLE_SHEET_SHARE_EMAIL }}
-          GOOGLE_SHEET_NAME: Sheet1
           NOVEL_SOURCE_FILE: data/scraped_novels.json
           WORKFLOW_ID: ${{ matrix.worker }}
           WORKFLOW_COUNT: "20"
@@ -64,11 +65,59 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: python novel_automator.py
 
-      - name: Upload run summary
+      - name: Upload worker result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: webnovel-worker-${{ matrix.worker }}
-          path: private-engine/run_summary.json
+          path: private-engine/worker_result.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  tracker:
+    if: ${{ always() && needs.worker.result != 'cancelled' }}
+    needs: worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout private engine
+        uses: actions/checkout@v4
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: pip install -r requirements.txt
+
+      - name: Download worker results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: webnovel-worker-*
+          path: results
+          merge-multiple: false
+
+      - name: Update Google Sheet
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_NAME: Novels
+        run: python sheet_aggregator.py ../results
+
+      - name: Upload tracker summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webnovel-tracker-summary
+          path: private-engine/tracker_summary.json
           if-no-files-found: ignore
           retention-days: 7
