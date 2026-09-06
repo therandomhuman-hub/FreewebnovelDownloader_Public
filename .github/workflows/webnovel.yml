@@ -18,7 +18,7 @@ on:
 permissions:
   contents: read
 
-# Prevent a delayed run from overlapping the next scheduled run.
+# Keep only one complete run active at a time.
 concurrency:
   group: webnovel-downloader
   cancel-in-progress: false
@@ -51,6 +51,10 @@ jobs:
       - name: Install dependencies
         working-directory: private-engine
         run: pip install -r requirements.txt
+
+      - name: Preflight Python validation
+        working-directory: private-engine
+        run: python -m py_compile novel_automator.py sheet_aggregator.py
 
       - name: Run worker
         working-directory: private-engine
@@ -98,6 +102,10 @@ jobs:
         working-directory: private-engine
         run: pip install -r requirements.txt
 
+      - name: Preflight aggregator validation
+        working-directory: private-engine
+        run: python -m py_compile sheet_aggregator.py
+
       - name: Download worker results
         uses: actions/download-artifact@v4
         with:
@@ -110,7 +118,7 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_SHEET_NAME: Novels
+          GOOGLE_SHEET_NAME: Sheet1
         run: python sheet_aggregator.py ../results
 
       - name: Upload tracker summary
