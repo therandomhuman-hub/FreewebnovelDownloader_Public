@@ -21,9 +21,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  healthcheck:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout private engine
+        uses: actions/checkout@v4
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: pip install -r requirements.txt
+
+      - name: Validate Python sources
+        working-directory: private-engine
+        run: python -m py_compile novel_automator.py sheet_aggregator.py self_check.py health_check.py
+
+      - name: Validate source partitioning and integrations
+        working-directory: private-engine
+        env:
+          DROPBOX_ACCESS_TOKEN: ${{ secrets.DROPBOX_ACCESS_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_NAME: Sheet1
+          NOVEL_SOURCE_FILE: data/scraped_novels.json
+          DROPBOX_ROOT: /WebNovel
+          WORKFLOW_COUNT: "20"
+          BATCH_SIZE: "5"
+          BATCHES_PER_RUN: "2"
+        run: |
+          python self_check.py
+          python health_check.py
+
   coordinator:
     permissions:
       contents: read
+    needs: healthcheck
     runs-on: ubuntu-latest
     outputs:
       run_index: ${{ steps.state.outputs.run_index }}
@@ -79,15 +125,6 @@ jobs:
       - name: Preflight Python validation
         working-directory: private-engine
         run: python -m py_compile novel_automator.py sheet_aggregator.py self_check.py
-
-      - name: Preflight source and partition validation
-        working-directory: private-engine
-        env:
-          NOVEL_SOURCE_FILE: data/scraped_novels.json
-          WORKFLOW_COUNT: "20"
-          BATCH_SIZE: "5"
-          BATCHES_PER_RUN: "2"
-        run: python self_check.py
 
       - name: Run worker
         working-directory: private-engine
