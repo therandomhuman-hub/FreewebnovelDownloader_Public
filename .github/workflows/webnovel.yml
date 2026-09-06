@@ -15,7 +15,6 @@ on:
   schedule:
     - cron: "15 0,6,12,18 * * *"
 
-# Keep one complete run active at a time. A delayed run queues instead of overlapping.
 concurrency:
   group: webnovel-downloader
   cancel-in-progress: false
@@ -48,17 +47,19 @@ jobs:
 
       - name: Validate Python sources
         working-directory: private-engine
-        run: python -m py_compile novel_automator.py sheet_aggregator.py self_check.py health_check.py
+        run: python -m py_compile novel_automator.py sheet_aggregator.py self_check.py health_check.py drive_storage.py
 
-      - name: Validate source partitioning and integrations
+      - name: Validate source and integrations
         working-directory: private-engine
         env:
-          DROPBOX_ACCESS_TOKEN: ${{ secrets.DROPBOX_ACCESS_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_NAME: Sheet1
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
           NOVEL_SOURCE_FILE: data/scraped_novels.json
-          DROPBOX_ROOT: /WebNovel
           WORKFLOW_COUNT: "20"
           BATCH_SIZE: "5"
           BATCHES_PER_RUN: "2"
@@ -124,12 +125,15 @@ jobs:
 
       - name: Preflight Python validation
         working-directory: private-engine
-        run: python -m py_compile novel_automator.py sheet_aggregator.py self_check.py
+        run: python -m py_compile novel_automator.py self_check.py drive_storage.py
 
       - name: Run worker
         working-directory: private-engine
         env:
-          DROPBOX_ACCESS_TOKEN: ${{ secrets.DROPBOX_ACCESS_TOKEN }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
           NOVEL_SOURCE_FILE: data/scraped_novels.json
           WORKFLOW_ID: ${{ matrix.worker }}
           WORKFLOW_COUNT: "20"
