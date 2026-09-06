@@ -18,10 +18,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: webnovel-downloader
-  cancel-in-progress: false
-
 jobs:
   worker:
     if: github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')
@@ -58,7 +54,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_SHARE_EMAIL: ${{ secrets.GOOGLE_SHEET_SHARE_EMAIL }}
-          GOOGLE_SHEET_NAME: Novels
+          GOOGLE_SHEET_NAME: Sheet1
           NOVEL_SOURCE_FILE: data/scraped_novels.json
           WORKFLOW_ID: ${{ matrix.worker }}
           WORKFLOW_COUNT: "20"
