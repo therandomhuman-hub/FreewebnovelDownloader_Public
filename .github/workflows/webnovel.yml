@@ -4,9 +4,31 @@ on:
   workflow_dispatch:
     inputs:
       worker_id:
-        description: "Worker to run manually (0-19)"
+        description: "Worker to run manually"
         required: false
         default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+          - "13"
+          - "14"
+          - "15"
+          - "16"
+          - "17"
+          - "18"
+          - "19"
       dry_run:
         description: "Metadata/status check only; do not generate or upload EPUBs"
         required: false
@@ -15,6 +37,7 @@ on:
   schedule:
     - cron: "15 0,6,12,18 * * *"
 
+# Never allow two scheduler runs to allocate/advance the same state concurrently.
 concurrency:
   group: webnovel-downloader
   cancel-in-progress: false
@@ -88,14 +111,14 @@ jobs:
           test -f state/scheduler_state.json
           run_index=$(jq -e '.run_index | numbers' state/scheduler_state.json)
           test "$run_index" -ge 0
-          echo "run_index=${run_index}" >> "$GITHUB_OUTPUT"
-          echo "Using deterministic run_index=${run_index}"
+          echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
+          echo "Using deterministic run_index=$run_index"
 
   worker:
     permissions:
       contents: read
     needs: coordinator
-    if: github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')
+    if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
@@ -144,15 +167,45 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: python novel_automator.py
 
-      - name: Fail on download/upload errors
+      - name: Validate worker result
         working-directory: private-engine
         shell: bash
+        env:
+          EXPECTED_WORKER: ${{ matrix.worker }}
+          EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          EXPECTED_TOTAL: "20"
+          EXPECTED_PER_WORKER: "10"
         run: |
           set -euo pipefail
-          test -f worker_result.json
-          failed=$(jq -r '.failed // 0' worker_result.json)
-          echo "Worker reported failed downloads/uploads: $failed"
+          test -s worker_result.json
+          jq empty worker_result.json
+          rid=$(jq -e '.workflow_id | numbers' worker_result.json)
+          run=$(jq -e '.run_index | numbers' worker_result.json)
+          total=$(jq -e '.workflow_count | numbers' worker_result.json)
+          selected=$(jq -e '.assignment.selected | numbers' worker_result.json)
+          start=$(jq -e '.assignment.start | numbers' worker_result.json)
+          end=$(jq -e '.assignment.end | numbers' worker_result.json)
+          source_total=$(jq -e '.source_total | numbers' worker_result.json)
+          failed=$(jq -e '.failed // 0 | numbers' worker_result.json)
+          test "$rid" -eq "$EXPECTED_WORKER"
+          test "$run" -eq "$EXPECTED_RUN_INDEX"
+          test "$total" -eq "$EXPECTED_TOTAL"
+          test "$selected" -le "$EXPECTED_PER_WORKER"
+          test "$end" -ge "$start"
+          test "$selected" -eq "$((end - start))"
+          test "$source_total" -gt 0
           test "$failed" -eq 0
+          expected_start=$((EXPECTED_RUN_INDEX * 200 + EXPECTED_WORKER * 10))
+          # The block wraps after the full source list; exact source-index checks are
+          # additionally enforced by self_check before processing. Here we ensure the
+          # worker's reported range width and worker identity are internally consistent.
+          if [[ "$selected" -gt 0 ]]; then
+            first=$(jq -e '.rows[0].source_index | numbers' worker_result.json)
+            last=$(jq -e '.rows[-1].source_index | numbers' worker_result.json)
+            test "$first" -eq "$start"
+            test "$last" -eq "$((end - 1))"
+          fi
+          echo "VALID_WORKER_RESULT worker=$rid run=$run rows=$selected range=$start..$((end-1)) failed=$failed"
 
       - name: Upload worker result
         if: always()
@@ -167,7 +220,7 @@ jobs:
     permissions:
       contents: write
     needs: [coordinator, worker]
-    if: ${{ always() && needs.worker.result != 'cancelled' }}
+    if: ${{ always() && needs.coordinator.result == 'success' && needs.worker.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -217,30 +270,55 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(find results -type f -name worker_result.json | sort)
-          count=${#files[@]}
-          complete=false
-          echo "Found $count worker result file(s); expected $EXPECTED_WORKERS."
-          declare -A seen_workers=()
+          declare -A seen=()
           invalid=0
+          valid=0
           for f in "${files[@]}"; do
             rid=$(jq -r '.workflow_id // -1' "$f")
             run=$(jq -r '.run_index // -1' "$f")
-            [[ "$run" = "$EXPECTED_RUN_INDEX" ]] || { echo "Ignoring wrong run_index file: $f ($run)"; invalid=$((invalid+1)); continue; }
-            if [[ "$rid" -lt 0 || "$rid" -gt 19 || -n "${seen_workers[$rid]+x}" ]]; then
-              echo "Ignoring invalid/duplicate worker result: $f (worker=$rid)"
+            [[ "$run" = "$EXPECTED_RUN_INDEX" ]] || { echo "Wrong run_index: $f"; invalid=$((invalid+1)); continue; }
+            [[ "$rid" =~ ^[0-9]+$ ]] || { echo "Invalid worker id: $f"; invalid=$((invalid+1)); continue; }
+            if [[ -n "${seen[$rid]+x}" ]]; then
+              echo "Duplicate worker result: worker=$rid"
               invalid=$((invalid+1))
               continue
             fi
-            seen_workers[$rid]=1
+            seen[$rid]=1
+            valid=$((valid+1))
+
+            source_total=$(jq -r '.source_total // -1' "$f")
+            start=$(jq -r '.assignment.start // -1' "$f")
+            end=$(jq -r '.assignment.end // -1' "$f")
+            selected=$(jq -r '.assignment.selected // -1' "$f")
+            expected_start=$((EXPECTED_RUN_INDEX * 200 + rid * 10))
+            # The absolute expectation is modulo the cycle length; source indexes
+            # themselves identify the actual rows selected and are checked below.
+            [[ "$selected" -eq $((end-start)) ]] || { echo "Bad assignment width: worker=$rid"; invalid=$((invalid+1)); continue; }
+            if [[ "$selected" -gt 0 ]]; then
+              first=$(jq -r '.rows[0].source_index // -1' "$f")
+              last=$(jq -r '.rows[-1].source_index // -1' "$f")
+              [[ "$first" -eq "$start" && "$last" -eq $((end-1)) ]] || { echo "Bad row range: worker=$rid"; invalid=$((invalid+1)); continue; }
+            fi
+            echo "worker=$rid source_total=$source_total range=$start..$((end-1)) selected=$selected"
           done
+
+          complete=false
           if [[ "$EXPECTED_WORKERS" = "1" ]]; then
-            [[ -n "${seen_workers[$EXPECTED_MANUAL_WORKER]+x}" ]] && complete=true
+            if [[ "$invalid" -eq 0 && -n "${seen[$EXPECTED_MANUAL_WORKER]+x}" ]]; then
+              complete=true
+            fi
           else
-            [[ "$invalid" -eq 0 && "${#seen_workers[@]}" -eq 20 ]] && complete=true
+            if [[ "$invalid" -eq 0 && "$valid" -eq 20 ]]; then
+              for expected in $(seq 0 19); do
+                [[ -n "${seen[$expected]+x}" ]] || { complete=false; break; }
+                complete=true
+              done
+            fi
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
-          echo "valid_workers=${#seen_workers[@]}" >> "$GITHUB_OUTPUT"
+          echo "valid_workers=$valid" >> "$GITHUB_OUTPUT"
           echo "invalid_results=$invalid" >> "$GITHUB_OUTPUT"
+          [[ "$complete" = true ]] || exit 1
 
       - name: Update Google Sheet
         working-directory: private-engine
