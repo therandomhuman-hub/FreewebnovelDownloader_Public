@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout private engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -78,7 +78,7 @@ jobs:
       run_index: ${{ steps.state.outputs.run_index }}
     steps:
       - name: Checkout scheduler state
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -107,7 +107,7 @@ jobs:
     steps:
       - name: Checkout private engine
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -116,7 +116,7 @@ jobs:
 
       - name: Set up Python
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -208,7 +208,7 @@ jobs:
 
       - name: Upload worker result
         if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: webnovel-worker-${{ matrix.worker }}
           path: private-engine/worker_result.json
@@ -224,7 +224,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout private engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -232,13 +232,13 @@ jobs:
           persist-credentials: false
 
       - name: Checkout public scheduler state
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: scheduler-state
           fetch-depth: 1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -253,7 +253,7 @@ jobs:
         run: python -m py_compile sheet_aggregator.py
 
       - name: Download worker results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           pattern: webnovel-worker-*
           path: results
@@ -312,7 +312,7 @@ jobs:
 
       - name: Upload tracker summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: webnovel-tracker-summary
           path: private-engine/tracker_summary.json
@@ -322,7 +322,6 @@ jobs:
       - name: Advance scheduler state
         if: ${{ success() && github.event_name == 'schedule' && needs.worker.result == 'success' && steps.result_check.outputs.complete == 'true' }}
         working-directory: scheduler-state
-        shell: bash
         env:
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
         run: |
