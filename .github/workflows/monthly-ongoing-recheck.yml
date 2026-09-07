@@ -1,0 +1,230 @@
+name: WebNovel Monthly Ongoing Recheck
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_id:
+        description: "Worker for a manual monthly recheck test"
+        required: false
+        default: "0"
+        type: choice
+        options: ["0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19"]
+      dry_run:
+        description: "Check statuses only; do not generate or upload EPUBs"
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # Run on the 28th-31st; the gate below allows only the actual last day.
+    # 17:00 UTC = 22:30 IST.
+    - cron: "0 17 28-31 * *"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  WORKFLOW_COUNT: "20"
+  GOOGLE_COMPLETED_SHEET: "Sheet1"
+  GOOGLE_ONGOING_SHEET: "Sheet2"
+
+concurrency:
+  group: webnovel-downloader
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+      run_index: ${{ steps.check.outputs.run_index }}
+    steps:
+      - name: Check actual last day of month
+        id: check
+        run: |
+          set -euo pipefail
+          run_index=$(date -u +%Y%m)
+          echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
+
+          if [[ "${{ github.event_name }}" = "workflow_dispatch" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual monthly recheck requested."
+            exit 0
+          fi
+
+          today_month=$(date -u +%Y-%m)
+          tomorrow_month=$(date -u -d 'tomorrow' +%Y-%m)
+          today=$(date -u +%Y-%m-%d)
+
+          if [[ "$today_month" != "$tomorrow_month" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Today is the actual last day of the month: $today"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Not the last day; skipping monthly recheck: $today"
+          fi
+
+  worker:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        worker: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - name: Checkout private engine
+        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
+        uses: actions/checkout@v6
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Run monthly ongoing recheck
+        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+          GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
+          MONTHLY_WORKER_ID: ${{ matrix.worker }}
+          MONTHLY_WORKER_COUNT: ${{ env.WORKFLOW_COUNT }}
+          MONTHLY_RUN_INDEX: ${{ needs.gate.outputs.run_index }}
+          MONTHLY_DRY_RUN: ${{ inputs.dry_run || false }}
+          DOWNLOAD_TIMEOUT_SECONDS: "2147483647"
+          EPUB_FETCH_ATTEMPTS: "3"
+          RETRY_PASSES: "2"
+          METADATA_WORKERS: "5"
+        run: python monthly_ongoing_recheck.py
+
+      - name: Validate monthly worker result
+        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
+        working-directory: private-engine
+        env:
+          EXPECTED_WORKER: ${{ matrix.worker }}
+          EXPECTED_RUN_INDEX: ${{ needs.gate.outputs.run_index }}
+        run: |
+          set -euo pipefail
+          test -s worker_result.json
+          jq empty worker_result.json
+          rid=$(jq -e '.workflow_id | numbers' worker_result.json)
+          run=$(jq -e '.run_index | numbers' worker_result.json)
+          total=$(jq -e '.workflow_count | numbers' worker_result.json)
+          failed=$(jq -e '.failed // 0 | numbers' worker_result.json)
+          test "$rid" -eq "$EXPECTED_WORKER"
+          test "$run" -eq "$EXPECTED_RUN_INDEX"
+          test "$total" -eq 20
+          test "$failed" -eq 0
+
+      - name: Upload monthly worker result
+        if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: webnovel-monthly-worker-${{ matrix.worker }}
+          path: private-engine/worker_result.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  tracker:
+    needs: [gate, worker]
+    if: ${{ always() && needs.gate.outputs.run == 'true' && needs.worker.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout private engine
+        uses: actions/checkout@v6
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Download monthly worker results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: webnovel-monthly-worker-*
+          path: results
+          merge-multiple: false
+
+      - name: Validate result set
+        env:
+          EXPECTED_WORKERS: ${{ github.event_name == 'schedule' && '20' || '1' }}
+          EXPECTED_RUN_INDEX: ${{ needs.gate.outputs.run_index }}
+          EXPECTED_MANUAL_WORKER: ${{ inputs.worker_id || '0' }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find results -type f -name worker_result.json | sort)
+          declare -A seen=(); valid=0; invalid=0
+
+          for f in "${files[@]}"; do
+            rid=$(jq -r '.workflow_id // -1' "$f")
+            run=$(jq -r '.run_index // -1' "$f")
+            [[ "$run" = "$EXPECTED_RUN_INDEX" ]] || { invalid=$((invalid+1)); continue; }
+            [[ "$rid" =~ ^[0-9]+$ ]] || { invalid=$((invalid+1)); continue; }
+            [[ -z "${seen[$rid]+x}" ]] || { invalid=$((invalid+1)); continue; }
+            seen[$rid]=1
+            valid=$((valid+1))
+          done
+
+          complete=false
+          if [[ "$EXPECTED_WORKERS" = "1" ]]; then
+            [[ "$invalid" -eq 0 && -n "${seen[$EXPECTED_MANUAL_WORKER]+x}" ]] && complete=true
+          elif [[ "$invalid" -eq 0 && "$valid" -eq 20 ]]; then
+            complete=true
+            for expected in $(seq 0 19); do
+              [[ -n "${seen[$expected]+x}" ]] || { complete=false; break; }
+            done
+          fi
+
+          echo "valid=$valid invalid=$invalid complete=$complete"
+          [[ "$complete" = true ]]
+
+      - name: Update split Google Sheet
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
+          GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+        run: python sheet_aggregator.py ../results
+
+      - name: Upload monthly tracker summary
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: webnovel-monthly-tracker-summary
+          path: private-engine/tracker_summary.json
+          if-no-files-found: ignore
+          retention-days: 30
