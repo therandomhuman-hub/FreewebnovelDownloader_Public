@@ -8,27 +8,7 @@ on:
         required: false
         default: "0"
         type: choice
-        options:
-          - "0"
-          - "1"
-          - "2"
-          - "3"
-          - "4"
-          - "5"
-          - "6"
-          - "7"
-          - "8"
-          - "9"
-          - "10"
-          - "11"
-          - "12"
-          - "13"
-          - "14"
-          - "15"
-          - "16"
-          - "17"
-          - "18"
-          - "19"
+        options: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
       dry_run:
         description: "Metadata/status check only; do not generate or upload EPUBs"
         required: false
@@ -37,7 +17,6 @@ on:
   schedule:
     - cron: "15 0,6,12,18 * * *"
 
-# Never allow two scheduler runs to allocate/advance the same state concurrently.
 concurrency:
   group: webnovel-downloader
   cancel-in-progress: false
@@ -173,8 +152,9 @@ jobs:
         env:
           EXPECTED_WORKER: ${{ matrix.worker }}
           EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
-          EXPECTED_TOTAL: "20"
+          EXPECTED_TOTAL_WORKERS: "20"
           EXPECTED_PER_WORKER: "10"
+          EXPECTED_BLOCK: "200"
         run: |
           set -euo pipefail
           test -s worker_result.json
@@ -187,25 +167,42 @@ jobs:
           end=$(jq -e '.assignment.end | numbers' worker_result.json)
           source_total=$(jq -e '.source_total | numbers' worker_result.json)
           failed=$(jq -e '.failed // 0 | numbers' worker_result.json)
+
           test "$rid" -eq "$EXPECTED_WORKER"
           test "$run" -eq "$EXPECTED_RUN_INDEX"
-          test "$total" -eq "$EXPECTED_TOTAL"
+          test "$total" -eq "$EXPECTED_TOTAL_WORKERS"
           test "$selected" -le "$EXPECTED_PER_WORKER"
-          test "$end" -ge "$start"
-          test "$selected" -eq "$((end - start))"
-          test "$source_total" -gt 0
+          test "$selected" -eq $((end-start))
+          test "$start" -ge 0
+          test "$end" -le "$source_total"
           test "$failed" -eq 0
-          expected_start=$((EXPECTED_RUN_INDEX * 200 + EXPECTED_WORKER * 10))
-          # The block wraps after the full source list; exact source-index checks are
-          # additionally enforced by self_check before processing. Here we ensure the
-          # worker's reported range width and worker identity are internally consistent.
+
+          cycle_count=$(( (source_total + EXPECTED_BLOCK - 1) / EXPECTED_BLOCK ))
+          [[ "$cycle_count" -gt 0 ]] || cycle_count=1
+          cycle_position=$((EXPECTED_RUN_INDEX % cycle_count))
+          expected_start=$((cycle_position * EXPECTED_BLOCK + EXPECTED_WORKER * EXPECTED_PER_WORKER))
+          expected_end=$((expected_start + EXPECTED_PER_WORKER))
+          [[ "$expected_start" -lt "$source_total" ]] || expected_end="$expected_start"
+          if [[ "$expected_start" -lt "$source_total" ]]; then
+            test "$start" -eq "$expected_start"
+            expected_end=$((expected_start + EXPECTED_PER_WORKER))
+            (( expected_end > source_total )) && expected_end="$source_total"
+            test "$end" -eq "$expected_end"
+          else
+            test "$selected" -eq 0
+            test "$start" -eq "$expected_start"
+            test "$end" -eq "$expected_start"
+          fi
+
           if [[ "$selected" -gt 0 ]]; then
             first=$(jq -e '.rows[0].source_index | numbers' worker_result.json)
             last=$(jq -e '.rows[-1].source_index | numbers' worker_result.json)
             test "$first" -eq "$start"
-            test "$last" -eq "$((end - 1))"
+            test "$last" -eq $((end-1))
+            row_count=$(jq '.rows | length' worker_result.json)
+            test "$row_count" -eq "$selected"
           fi
-          echo "VALID_WORKER_RESULT worker=$rid run=$run rows=$selected range=$start..$((end-1)) failed=$failed"
+          echo "VALID_WORKER_RESULT worker=$rid run=$run source_total=$source_total range=$start..$((end-1)) selected=$selected"
 
       - name: Upload worker result
         if: always()
@@ -260,13 +257,13 @@ jobs:
           path: results
           merge-multiple: false
 
-      - name: Assess worker results
+      - name: Validate worker result set
         id: result_check
+        shell: bash
         env:
           EXPECTED_WORKERS: ${{ github.event_name == 'schedule' && '20' || '1' }}
           EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           EXPECTED_MANUAL_WORKER: ${{ inputs.worker_id || '0' }}
-        shell: bash
         run: |
           set -euo pipefail
           mapfile -t files < <(find results -type f -name worker_result.json | sort)
@@ -285,33 +282,16 @@ jobs:
             fi
             seen[$rid]=1
             valid=$((valid+1))
-
-            source_total=$(jq -r '.source_total // -1' "$f")
-            start=$(jq -r '.assignment.start // -1' "$f")
-            end=$(jq -r '.assignment.end // -1' "$f")
-            selected=$(jq -r '.assignment.selected // -1' "$f")
-            expected_start=$((EXPECTED_RUN_INDEX * 200 + rid * 10))
-            # The absolute expectation is modulo the cycle length; source indexes
-            # themselves identify the actual rows selected and are checked below.
-            [[ "$selected" -eq $((end-start)) ]] || { echo "Bad assignment width: worker=$rid"; invalid=$((invalid+1)); continue; }
-            if [[ "$selected" -gt 0 ]]; then
-              first=$(jq -r '.rows[0].source_index // -1' "$f")
-              last=$(jq -r '.rows[-1].source_index // -1' "$f")
-              [[ "$first" -eq "$start" && "$last" -eq $((end-1)) ]] || { echo "Bad row range: worker=$rid"; invalid=$((invalid+1)); continue; }
-            fi
-            echo "worker=$rid source_total=$source_total range=$start..$((end-1)) selected=$selected"
           done
 
           complete=false
           if [[ "$EXPECTED_WORKERS" = "1" ]]; then
-            if [[ "$invalid" -eq 0 && -n "${seen[$EXPECTED_MANUAL_WORKER]+x}" ]]; then
-              complete=true
-            fi
+            [[ "$invalid" -eq 0 && -n "${seen[$EXPECTED_MANUAL_WORKER]+x}" ]] && complete=true
           else
             if [[ "$invalid" -eq 0 && "$valid" -eq 20 ]]; then
+              complete=true
               for expected in $(seq 0 19); do
                 [[ -n "${seen[$expected]+x}" ]] || { complete=false; break; }
-                complete=true
               done
             fi
           fi
