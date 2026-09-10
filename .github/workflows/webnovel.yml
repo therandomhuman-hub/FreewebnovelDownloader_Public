@@ -175,6 +175,7 @@ jobs:
           EXPECTED_WORKER: ${{ matrix.worker }}
           EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           E2E_TEST_URL: ${{ inputs.test_url || '' }}
+          E2E_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         run: |
           set -euo pipefail
           test -s worker_result.json
@@ -198,9 +199,15 @@ jobs:
             test "$start" -eq 0
             test "$end" -eq 1
             jq -e '.rows | length == 1' worker_result.json >/dev/null
-            jq -e '.rows[0].status == "Completed"' worker_result.json >/dev/null
-            jq -e '.rows[0].download_status == "Downloaded to Google Drive" or .rows[0].download_status == "Already in Google Drive"' worker_result.json >/dev/null
-            jq -e '.rows[0].drive_file_id != "" and .rows[0].drive_url != ""' worker_result.json >/dev/null
+            if [[ "$E2E_DRY_RUN" == "true" ]]; then
+              jq -e '.rows[0].status != "Completed"' worker_result.json >/dev/null
+              jq -e '.rows[0].status != "ERROR"' worker_result.json >/dev/null
+              jq -e '.rows[0].download_status != "Downloaded to Google Drive" and .rows[0].download_status != "Already in Google Drive"' worker_result.json >/dev/null
+            else
+              jq -e '.rows[0].status == "Completed"' worker_result.json >/dev/null
+              jq -e '.rows[0].download_status == "Downloaded to Google Drive" or .rows[0].download_status == "Already in Google Drive"' worker_result.json >/dev/null
+              jq -e '.rows[0].drive_file_id != "" and .rows[0].drive_url != ""' worker_result.json >/dev/null
+            fi
           else
             per_worker=$((BATCH_SIZE * BATCHES_PER_RUN))
             block_size=$((WORKFLOW_COUNT * per_worker))
@@ -242,7 +249,7 @@ jobs:
           path: private-engine
           persist-credentials: false
       - name: Checkout scheduler state
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30af803
         with:
           path: scheduler-state
           fetch-depth: 1
