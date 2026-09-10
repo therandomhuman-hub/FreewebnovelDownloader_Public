@@ -1,104 +1,74 @@
 # FreeWebNovel Downloader — Public Scheduler
 
-The public repository contains GitHub Actions orchestration and scheduler state. Downloader implementation, recursive discovery code, and the master novel catalog remain in `therandomhuman-hub/FreewebnovelDownloader_Private`.
+Production orchestration for the FreeWebNovel downloader. The public repository contains GitHub Actions, scheduler state, recovery workflows, discovery orchestration, and the Pages site. The private repository contains the downloader runtime and catalog.
 
-## Production architecture
-
-The system is now a continuous catalog pipeline rather than a fixed 10,727-URL batch:
+## Architecture
 
 ```text
-FreeWebNovel roots
-  /home
-  /sort/latest-novel/
-  /sort/latest-release/
-        |
-        v
-Recursive same-domain crawler
-        |
-        +--> every discovered HTML sub-link
-        |       +--> links from that page
-        |       +--> links from those pages
-        |       +--> continue until the crawl queue is empty
-        |
-        v
-Canonical /novel/... URL catalog
-        |
-        v
-Completed-status pipeline
-        |
-        +--> Completed -> LinkToEPUB -> Community Library -> newest matching EPUB -> Drive
-        +--> Ongoing   -> Sheet2 -> monthly recheck
-        +--> Unknown/error -> Sheet2 -> retry later
+FreeWebNovel
+    │
+    ▼
+Recursive discovery ──► canonical novel catalog
+    │
+    ▼
+20 deterministic workers
+    │
+    ├── Completed ──► Community Library ──► Google Drive ──► Sheet1
+    │
+    └── Ongoing / unknown / failed ───────────────────────► Sheet2
+                                                             │
+                                                             ▼
+                                                   monthly recheck
 ```
 
-The crawler canonicalizes `freewebnovel.com` and `www.freewebnovel.com`, removes fragments/query variants, rejects external/non-page links, follows pagination and genre links, and deduplicates novel URLs. The initial catalog is retained as a seed; successful discovery expands it automatically.
+## Production guarantees
 
-## Recursive discovery
+- **Gap-free scheduling:** persistent `run_index` partitions the catalog; a failed scheduled run is not silently skipped.
+- **Immutable provenance:** every scheduled run records the exact private-engine commit, public commit, run ID, worker count, and scheduling parameters.
+- **Deterministic workers:** every worker receives the exact private-engine revision tested by the health check.
+- **Fail-closed tracking:** scheduler state advances only after all expected worker results are present, valid, integrity-checked, and successfully reconciled to Google Sheets.
+- **Worker isolation:** process-level worker failures block reconciliation; per-novel failures remain retryable in Sheet2.
+- **Idempotent storage:** Drive is checked before EPUB generation/upload, preventing duplicate work.
+- **Safe recovery:** historical reconciliation uses the run's recorded engine revision and never advances scheduler state.
+- **Discovery safety:** a partial or error-producing crawl cannot replace the known-good catalog.
+- **Action integrity:** GitHub Actions are pinned to immutable commit SHAs.
 
-The primary production workflow is `.github/workflows/webnovel-discovery-primary.yml`. It runs every 6 hours shortly after the legacy discovery wrapper and starts from the homepage plus latest-novel and latest-release roots. It recursively follows every reachable same-site HTML link and extracts all `/novel/...` URLs.
+## Workflows
 
-The crawler checkpoints its frontier, visited URLs, discovered novel URLs, and unresolved errors to a private Google Drive application-data file. This lets a crawl resume across GitHub Actions job boundaries instead of restarting from page 1 when a full-site crawl takes longer than one 330-minute job. It also revisits the live catalog roots on every run so newly added novels are detected.
+| Workflow | Purpose |
+|---|---|
+| `webnovel.yml` | Scheduled production download pipeline |
+| `webnovel-discovery-primary.yml` | Recursive catalog discovery |
+| `monthly-ongoing-recheck.yml` | Month-end recheck of Sheet2 |
+| `webnovel-tracker-reconcile.yml` | Manual reconciliation of a historical run |
+| `webnovel-tracker-recovery.yml` | Historical tracker recovery without scheduler advancement |
+| `production-audit.yml` | Automated production-readiness checks |
+| `deploy-pages.yml` | GitHub Pages deployment |
 
-The crawler requires a complete, zero-error crawl before replacing the master catalog. A partial/error crawl never replaces a known-good catalog.
+## Scheduling
 
-`.github/workflows/webnovel-discovery.yml` is retained as a compatibility wrapper and runs the crawler in legacy/no-op mode; the primary workflow is the authoritative discovery scheduler.
+The production downloader runs four times per day with 20 workers. Each worker processes two batches of five URLs, for a maximum of 200 URL checks per scheduled run. The scheduler uses the current catalog length, so it does not depend on a hard-coded catalog size.
 
-## Downloader flow
+Manual workflow runs are operational tests only. They never advance production scheduler state.
 
-`.github/workflows/webnovel.yml` is the production download workflow.
+## Discovery
 
-Each scheduled run performs:
+The primary discovery workflow starts from the configured FreeWebNovel roots and recursively follows reachable same-site pages to collect canonical `/novel/...` URLs. Discovery state is checkpointed remotely for production continuity. The master catalog is replaced only after the crawl reports complete with zero errors.
 
-1. Health checks for source integrity, Google Sheets, Google Drive and source-page access.
-2. Deterministic coordinator assignment using persistent `state/scheduler_state.json`.
-3. A 20-worker matrix, with 10 URLs per worker (two 5-URL batches) and 200 URLs per run.
-4. Exact status extraction from each novel's own FreeWebNovel metadata.
-5. `Completed` only: check Drive before generating anything.
-6. New EPUB: submit to LinkToEPUB, require the existing ±25 chapter-count tolerance, and wait for the Community Library result.
-7. Community Library is searched/refreshed every 5 minutes and the first matching result is selected as the newest duplicate.
-8. The EPUB is uploaded to Google Drive.
-9. Workers emit result artifacts; only the tracker job writes Google Sheets.
-10. Tracker maintains `Sheet1` for successfully completed/downloaded novels and `Sheet2` for Ongoing, unknown, error, or failed-download rows.
-11. Scheduler state advances only after the expected worker set and tracker operation succeed.
+Discovery failures are deliberately independent from downloader worker failures: a discovery problem must not silently alter or skip the downloader schedule.
 
-## Dynamic capacity
+## Tracking
 
-The 200-URL/run and 800-URL/day figures are throughput limits, not a fixed catalog size. The worker assignment is calculated from the current source-list length, so the final block automatically becomes smaller when fewer URLs remain.
+Google Sheets uses two tabs:
 
-As recursive discovery adds novels, the same scheduling system automatically expands to the new catalog size without a manually maintained final URL count.
+- **Sheet1:** novels confirmed completed and successfully stored in Google Drive.
+- **Sheet2:** ongoing, unknown, metadata-error, or download-failure rows awaiting later processing.
 
-## Monthly ongoing recheck
+Only the tracker job writes the production Sheets. Workers publish result artifacts and execution markers.
 
-`.github/workflows/monthly-ongoing-recheck.yml` checks Sheet2 on the actual last day of each month. A novel that has become explicitly `Completed` is sent through the same hardened Community Library pipeline. Failed downloads are not promoted to Sheet1.
+## Required secrets
 
-## Historical recovery
-
-`.github/workflows/webnovel-tracker-recovery.yml` can reconstruct Sheet1/Sheet2 from historical worker artifacts without modifying scheduler state.
-
-## Production audit
-
-`.github/workflows/production-audit.yml` runs weekly and manually. It verifies Python compilation, deterministic tests, source partition checks, recursive crawler self-tests, required workflows, SHA-pinned GitHub Actions, and removal of the obsolete whole-batch retry wrapper.
-
-## Status policy
-
-The downloader uses the source novel page's explicit metadata status. It does not infer completion from chapter numbers, titles, dates, summaries, or activity.
-
-- `Completed`, `Complete`, `Finished` → eligible for download.
-- `Ongoing` → never downloaded until a later recheck reports completion.
-- Unknown/unrecognized status → not downloaded.
-- Metadata/download errors → tracked and retried later.
-
-## Storage
-
-Google Drive is the production storage layer under the configured `Webnovel` folder. Dropbox is not part of the production download path.
-
-## Manual modes
-
-`worker_id` selects the worker for a manual run. `dry_run=true` performs metadata/status checks without generating or uploading EPUBs and does not advance scheduler state.
-
-`test_url` provides a one-novel end-to-end test path for a Completed novel. Repeating the same test should use the existing Drive file path rather than regenerate the EPUB.
-
-## Secrets
+Configure these as GitHub Actions Secrets:
 
 - `PRIVATE_REPO_TOKEN`
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
@@ -108,6 +78,8 @@ Google Drive is the production storage layer under the configured `Webnovel` fol
 - `GOOGLE_DRIVE_REFRESH_TOKEN`
 - `GOOGLE_DRIVE_FOLDER_ID`
 
-Keep all credentials in GitHub Actions Secrets and out of the repositories.
+Never commit credentials or generated runtime state to the repository.
 
-Only use this downloader for material you are authorized to download and archive, and comply with applicable terms and copyright law.
+## Legal / responsible use
+
+Use the downloader only for material you are authorized to download and archive, and comply with applicable terms, copyright law, and service restrictions.
