@@ -140,6 +140,8 @@ jobs:
       max-parallel: 20
       matrix:
         worker: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    env:
+      WORKFLOW_COUNT: ${{ vars.WORKFLOW_COUNT || '20' }}
     steps:
       - name: Checkout tested private engine revision
         if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
@@ -303,7 +305,7 @@ jobs:
       contents: read
       actions: read
     env:
-      WORKFLOW_COUNT: "20"
+      WORKFLOW_COUNT: ${{ vars.WORKFLOW_COUNT || '20' }}
     steps:
       - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -364,10 +366,18 @@ jobs:
             test "$result_sha" = "$(sha256sum "$result_file" | awk '{print $1}')"
             jq empty "$result_file"
             jq -e '.rows | arrays' "$result_file" >/dev/null
+            result_workflow=$(jq -e '.workflow_id | numbers' "$result_file")
+            result_run=$(jq -e '.run_index | numbers' "$result_file")
+            result_count=$(jq -e '.workflow_count | numbers' "$result_file")
+            test "$result_workflow" -eq "$rid"
+            test "$result_run" -eq "$EXPECTED_RUN_INDEX"
+            test "$result_count" -eq "$WORKFLOW_COUNT"
             if [[ "$status" == "completed" ]]; then
               test "$failed" -ge 0
             elif [[ "$status" == "process_failed" ]]; then
               test "$failed" -eq -1
+              echo "Worker process_failed marker: $rid"
+              exit 1
             else
               echo "Unknown worker status: $status"
               exit 1
