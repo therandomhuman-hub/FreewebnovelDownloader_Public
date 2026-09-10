@@ -88,6 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run_index: ${{ steps.state.outputs.run_index }}
+      engine_sha: ${{ steps.engine.outputs.engine_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -100,6 +101,19 @@ jobs:
           run_index=$(jq -e '.run_index | numbers' state/scheduler_state.json)
           test "$run_index" -ge 0
           echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
+      - name: Resolve private engine revision
+        id: engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export private engine SHA
+        id: engine_sha
+        working-directory: private-engine
+        run: echo "engine_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   worker:
     needs: coordinator
@@ -117,6 +131,7 @@ jobs:
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ needs.coordinator.outputs.engine_sha }}
           path: private-engine
           persist-credentials: false
       - name: Set up Python
@@ -246,6 +261,7 @@ jobs:
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ needs.coordinator.outputs.engine_sha }}
           path: private-engine
           persist-credentials: false
       - name: Checkout scheduler state
@@ -317,11 +333,7 @@ jobs:
           set -euo pipefail
           current=$(jq -e '.run_index | numbers' state/scheduler_state.json)
           test "$current" = "$RUN_INDEX"
-          jq --argjson next "$((RUN_INDEX + 1))" \
-             --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-             --argjson completed "$RUN_INDEX" \
-             '.run_index=$next | .last_completed_run_index=$completed | .last_completed_at=$now' \
-             state/scheduler_state.json > state/scheduler_state.tmp
+          jq --argjson next "$((RUN_INDEX + 1))" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson completed "$RUN_INDEX" '.run_index=$next | .last_completed_run_index=$completed | .last_completed_at=$now' state/scheduler_state.json > state/scheduler_state.tmp
           mv state/scheduler_state.tmp state/scheduler_state.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
