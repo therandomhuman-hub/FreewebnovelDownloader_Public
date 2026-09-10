@@ -1,0 +1,66 @@
+name: Public Workflow Audit
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-workflow-audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Validate production workflow inventory
+        run: |
+          set -euo pipefail
+          for file in \
+            .github/workflows/webnovel.yml \
+            .github/workflows/webnovel-discovery-primary.yml \
+            .github/workflows/monthly-ongoing-recheck.yml \
+            .github/workflows/webnovel-tracker-reconcile.yml \
+            .github/workflows/webnovel-tracker-recovery.yml \
+            .github/workflows/production-audit.yml \
+            .github/workflows/deploy-pages.yml; do
+            test -s "$file"
+          done
+      - name: Validate every GitHub Action is SHA pinned
+        run: |
+          set -euo pipefail
+          bad=$(grep -R -nE '^[[:space:]]*uses:' .github/workflows | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)
+          if [[ -n "$bad" ]]; then
+            echo "Unpinned GitHub Actions detected:"
+            echo "$bad"
+            exit 1
+          fi
+      - name: Reject persisted Git credentials
+        run: |
+          set -euo pipefail
+          bad=$(grep -R -nE 'persist-credentials:[[:space:]]*true' .github/workflows || true)
+          if [[ -n "$bad" ]]; then
+            echo "Persisted GitHub credentials detected:"
+            echo "$bad"
+            exit 1
+          fi
+      - name: Verify scheduler and provenance invariants
+        run: |
+          set -euo pipefail
+          grep -q "if: \${{ always() && github.event_name == 'schedule' && needs.coordinator.result == 'success' }}" .github/workflows/webnovel.yml
+          grep -q 'process_failed_count=' .github/workflows/webnovel.yml
+          grep -q 'test "$process_failed_count" -eq 0' .github/workflows/webnovel.yml
+          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          grep -q 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'persist-credentials: false' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'GIT_AUTH_HEADER' .github/workflows/webnovel-tracker-recovery.yml

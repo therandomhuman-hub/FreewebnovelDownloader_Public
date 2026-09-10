@@ -187,6 +187,9 @@ jobs:
           grep -q 'engine_sha' .github/workflows/webnovel-tracker-reconcile.yml
           grep -q 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
           grep -q 'sha256sum -c run-manifest.sha256' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'persist-credentials: false' .github/workflows/webnovel-tracker-reconcile.yml
       - name: Verify tracker writes are fail-closed
         working-directory: private-engine
         run: |
@@ -219,3 +222,18 @@ jobs:
       - name: Verify no obsolete retry wrapper remains
         working-directory: private-engine
         run: test ! -e run_worker_retry.py
+      - name: Verify jq string extraction is raw
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          ! grep -q 'engine=$(jq -e '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          ! grep -q 'status=$(jq -e '\''.status | strings'\'' "$marker")' .github/workflows/webnovel.yml
+      - name: Verify historical recovery does not persist Git credentials
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'persist-credentials: false' .github/workflows/webnovel-tracker-recovery.yml
+          grep -q 'GIT_AUTH_HEADER' .github/workflows/webnovel-tracker-recovery.yml
+          ! grep -q 'persist-credentials: true' .github/workflows/webnovel-tracker-recovery.yml

@@ -132,8 +132,8 @@ jobs:
           for marker in "${markers[@]}"; do
             jq empty "$marker"
             rid=$(jq -e '.worker_id | numbers' "$marker")
-            engine=$(jq -e '.engine_sha | strings' "$marker")
-            status=$(jq -e '.status | strings' "$marker")
+            engine=$(jq -er '.engine_sha | strings' "$marker")
+            status=$(jq -er '.status | strings' "$marker")
             run=$(jq -e '.run_index | numbers' "$marker")
             result_sha=$(jq -r '.result_sha256 // ""' "$marker")
             test "$engine" = "$EXPECTED_ENGINE_SHA"
