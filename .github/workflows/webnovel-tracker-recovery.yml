@@ -76,14 +76,14 @@ jobs:
               subprocess.run(["gh","run","download",str(database_id),"--repo",repo,"--pattern","webnovel-worker-*","--dir",str(destination/"workers")],check=True)
           PY
 
-      - name: Checkout private engine with credentials for exact historical commits
+      - name: Checkout private engine without persisting credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -137,6 +137,7 @@ jobs:
 
       - name: Recover trackers oldest first using exact historical engine revision
         env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
@@ -144,16 +145,20 @@ jobs:
           RESOLVED_RUNS: ${{ steps.resolve.outputs.runs }}
         run: |
           set -euo pipefail
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_REPO_TOKEN" | base64 -w0)"
           python - <<'PY'
           import json, os, pathlib, subprocess
           runs=json.loads(os.environ["RESOLVED_RUNS"])
+          root_base=pathlib.Path("recovery")
+          auth_header=os.environ["GIT_AUTH_HEADER"]
           for run in runs:
               number=int(run["number"])
-              root=pathlib.Path("recovery")/f"run-{number}"
+              root=root_base/f"run-{number}"
               manifest=json.loads(next(root.joinpath("manifest").rglob("run-manifest.json")).read_text(encoding="utf-8"))
               engine=manifest["engine_sha"]
               print(f"=== Recovering WebNovel Downloader #{number} with engine {engine} ===")
-              subprocess.run(["git","fetch","origin",engine],cwd="private-engine",check=True)
+              subprocess.run(["git","-c",f"http.extraheader={auth_header}","fetch","origin",engine],cwd="private-engine",check=True)
               subprocess.run(["git","checkout","--detach",engine],cwd="private-engine",check=True)
               subprocess.run(["python","-m","pip","install","-r","requirements.txt"],cwd="private-engine",check=True)
               subprocess.run(["python","sheet_aggregator.py",str(root.joinpath("workers").resolve())],cwd="private-engine",check=True)
