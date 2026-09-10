@@ -222,6 +222,7 @@ jobs:
           WORKER_ID: ${{ matrix.worker }}
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+          WORKFLOW_COUNT: ${{ env.WORKFLOW_COUNT }}
         run: |
           set -euo pipefail
           if test -s worker_result.json \
@@ -286,6 +287,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      WORKFLOW_COUNT: "20"
     steps:
       - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
