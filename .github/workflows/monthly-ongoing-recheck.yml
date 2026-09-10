@@ -15,8 +15,6 @@ on:
         default: true
         type: boolean
   schedule:
-    # Run on the 28th-31st; the gate below allows only the actual last day.
-    # 17:00 UTC = 22:30 IST.
     - cron: "0 17 28-31 * *"
 
 permissions:
@@ -29,7 +27,9 @@ env:
   GOOGLE_ONGOING_SHEET: "Sheet2"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
   COMMUNITY_LIBRARY_POLL_SECONDS: "300"
-  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "1200"
+  # Keep watching until the novel appears; GitHub's 330-minute worker timeout
+  # remains the external safety limit.
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "2147483647"
   COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
 
 concurrency:
@@ -49,17 +49,14 @@ jobs:
           set -euo pipefail
           run_index=$(date -u +%Y%m)
           echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
-
           if [[ "${{ github.event_name }}" = "workflow_dispatch" ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "Manual monthly recheck requested."
             exit 0
           fi
-
           today_month=$(date -u +%Y-%m)
           tomorrow_month=$(date -u -d 'tomorrow' +%Y-%m)
           today=$(date -u +%Y-%m-%d)
-
           if [[ "$today_month" != "$tomorrow_month" ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "Today is the actual last day of the month: $today"
@@ -87,7 +84,6 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: false
-
       - name: Set up Python
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         uses: actions/setup-python@v7
@@ -95,12 +91,10 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
-
       - name: Install dependencies
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-
       - name: Run monthly ongoing recheck
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         working-directory: private-engine
@@ -125,7 +119,6 @@ jobs:
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
         run: python monthly_community_entrypoint.py
-
       - name: Validate monthly worker result
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         working-directory: private-engine
@@ -144,7 +137,6 @@ jobs:
           test "$run" -eq "$EXPECTED_RUN_INDEX"
           test "$total" -eq 20
           test "$failed" -eq 0
-
       - name: Upload monthly worker result
         if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
         uses: actions/upload-artifact@v6
@@ -167,24 +159,20 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: false
-
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
-
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-
       - name: Download monthly worker results
         uses: actions/download-artifact@v7
         with:
           pattern: webnovel-monthly-worker-*
           path: results
           merge-multiple: false
-
       - name: Validate result set
         env:
           EXPECTED_WORKERS: ${{ github.event_name == 'schedule' && '20' || '1' }}
@@ -194,7 +182,6 @@ jobs:
           set -euo pipefail
           mapfile -t files < <(find results -type f -name worker_result.json | sort)
           declare -A seen=(); valid=0; invalid=0
-
           for f in "${files[@]}"; do
             rid=$(jq -r '.workflow_id // -1' "$f")
             run=$(jq -r '.run_index // -1' "$f")
@@ -204,7 +191,6 @@ jobs:
             seen[$rid]=1
             valid=$((valid+1))
           done
-
           complete=false
           if [[ "$EXPECTED_WORKERS" = "1" ]]; then
             [[ "$invalid" -eq 0 && -n "${seen[$EXPECTED_MANUAL_WORKER]+x}" ]] && complete=true
@@ -214,10 +200,8 @@ jobs:
               [[ -n "${seen[$expected]+x}" ]] || { complete=false; break; }
             done
           fi
-
           echo "valid=$valid invalid=$invalid complete=$complete"
           [[ "$complete" = true ]]
-
       - name: Update split Google Sheet
         working-directory: private-engine
         env:
@@ -226,7 +210,6 @@ jobs:
           GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
           GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
         run: python sheet_aggregator.py ../results
-
       - name: Upload monthly tracker summary
         if: always()
         uses: actions/upload-artifact@v6
