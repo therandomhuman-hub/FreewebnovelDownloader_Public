@@ -1,0 +1,172 @@
+name: WebNovel Tracker Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_numbers:
+        description: "WebNovel Downloader run numbers to recover, oldest first (example: 66,67)"
+        required: true
+        default: "66,67"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  GOOGLE_COMPLETED_SHEET: "Sheet1"
+  GOOGLE_ONGOING_SHEET: "Sheet2"
+
+# Never overlap historical recovery with a production downloader/tracker run.
+concurrency:
+  group: webnovel-downloader
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout private engine
+        uses: actions/checkout@v6
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Resolve requested workflow runs
+        id: resolve
+        env:
+          RUN_NUMBERS: ${{ inputs.run_numbers }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          requested = []
+          for raw in os.environ["RUN_NUMBERS"].split(","):
+              raw = raw.strip()
+              if not raw:
+                  continue
+              if not raw.isdigit():
+                  raise SystemExit(f"Invalid workflow run number: {raw!r}")
+              requested.append(int(raw))
+          if not requested:
+              raise SystemExit("run_numbers must contain at least one workflow run number")
+          if requested != sorted(set(requested)):
+              raise SystemExit("run_numbers must be unique and listed oldest first")
+
+          raw = subprocess.check_output([
+              "gh", "run", "list",
+              "--repo", os.environ["GITHUB_REPOSITORY"],
+              "--workflow", "webnovel.yml",
+              "--limit", "100",
+              "--json", "number,databaseId,conclusion,status",
+          ], text=True)
+          runs = {int(r["number"]): r for r in json.loads(raw)}
+
+          resolved = []
+          for number in requested:
+              run = runs.get(number)
+              if not run:
+                  raise SystemExit(f"WebNovel Downloader run #{number} was not found in the recent run list")
+              resolved.append({"number": number, "databaseId": int(run["databaseId"]), "status": run["status"], "conclusion": run["conclusion"]})
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("runs=" + json.dumps(resolved, separators=(",", ":")) + "\n")
+          print(json.dumps(resolved, indent=2))
+          PY
+
+      - name: Download historical worker artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESOLVED_RUNS: ${{ steps.resolve.outputs.runs }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          runs = json.loads(os.environ["RESOLVED_RUNS"])
+          root = pathlib.Path("recovery")
+          root.mkdir(exist_ok=True)
+
+          for run in runs:
+              number = int(run["number"])
+              database_id = int(run["databaseId"])
+              destination = root / f"run-{number}"
+              destination.mkdir(parents=True, exist_ok=True)
+              print(f"Downloading worker artifacts for WebNovel Downloader #{number} (run id {database_id})")
+              subprocess.run([
+                  "gh", "run", "download", str(database_id),
+                  "--repo", repo,
+                  "--pattern", "webnovel-worker-*",
+                  "--dir", str(destination),
+              ], check=True)
+          PY
+
+      - name: Show recovered artifacts
+        run: |
+          set -euo pipefail
+          find recovery -type f -name worker_result.json -print | sort
+          count=$(find recovery -type f -name worker_result.json | wc -l)
+          test "$count" -gt 0
+          echo "Recovered worker result artifacts: $count"
+
+      - name: Recover trackers oldest first
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
+          GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+          RESOLVED_RUNS: ${{ steps.resolve.outputs.runs }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          runs = json.loads(os.environ["RESOLVED_RUNS"])
+          for run in runs:
+              number = int(run["number"])
+              root = os.path.join("..", "recovery", f"run-{number}")
+              print(f"=== Recovering WebNovel Downloader #{number} ===")
+              subprocess.run(["python", "sheet_aggregator.py", root], check=True)
+              print(open("tracker_summary.json", encoding="utf-8").read())
+          PY
+
+      - name: Verify scheduler state was not touched
+        run: |
+          set -euo pipefail
+          echo "Historical tracker recovery completed without checking out or modifying scheduler state."
+
+      - name: Upload recovery summaries
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: webnovel-tracker-recovery-summary
+          path: private-engine/tracker_summary.json
+          if-no-files-found: ignore
+          retention-days: 14
