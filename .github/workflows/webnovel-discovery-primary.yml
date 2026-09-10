@@ -33,24 +33,21 @@ jobs:
     timeout-minutes: 330
     steps:
       - name: Checkout private engine
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: true
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
-
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-
       - name: Compile and self-test
         working-directory: private-engine
         run: |
@@ -58,7 +55,6 @@ jobs:
           python -m py_compile *.py tests/*.py
           python -m unittest discover -s tests -v
           python discovery_crawler.py --self-test
-
       - name: Recursively discover every reachable same-site page
         working-directory: private-engine
         env:
@@ -78,7 +74,6 @@ jobs:
           DISCOVERY_CHECKPOINT_PAGES: ${{ env.DISCOVERY_CHECKPOINT_PAGES }}
           DISCOVERY_PAGE_RETRIES: ${{ env.DISCOVERY_PAGE_RETRIES }}
         run: python discovery_crawler.py
-
       - name: Require a complete, error-free crawl before replacing the catalog
         working-directory: private-engine
         run: |
@@ -90,11 +85,9 @@ jobs:
           jq -e 'length == (unique | length)' data/discovered_novels.json >/dev/null
           jq -e '.complete == true and .errors == 0 and .persistent_state == true' data/discovery_report.json >/dev/null
           jq . data/discovery_report.json
-
       - name: Replace the master catalog
         working-directory: private-engine
         run: cp data/discovered_novels.json data/scraped_novels.json
-
       - name: Commit expanded catalog
         working-directory: private-engine
         run: |
@@ -110,10 +103,9 @@ jobs:
           new=$(jq -r '.new_novel_urls' data/discovery_report.json)
           git commit -m "Update recursive FreeWebNovel catalog: ${count} novels (${new} new)"
           git push origin HEAD:main
-
       - name: Upload discovery report
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: webnovel-primary-discovery-report
           path: |
