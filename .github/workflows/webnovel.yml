@@ -347,10 +347,8 @@ jobs:
           for expected in $(seq 0 $((WORKFLOW_COUNT - 1))); do
             [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker marker: $expected"; exit 1; }
           done
-          if grep -R -l '"status": "process_failed"' results/*/worker_execution_marker.json >/dev/null 2>&1; then
-            echo "At least one worker process failed. Do not reconcile or advance the production scheduler."
-            exit 1
-          fi
+          process_failed_count=$(jq -s '[.[] | select(.status == "process_failed")] | length' results/*/worker_execution_marker.json)
+          test "$process_failed_count" -eq 0
           echo "complete=true" >> "$GITHUB_OUTPUT"
       - name: Update split Google Sheet
         if: ${{ steps.result_check.outputs.complete == 'true' }}
@@ -380,20 +378,28 @@ jobs:
           set -euo pipefail
           current=$(jq -e '.run_index | numbers' state/scheduler_state.json)
           test "$current" = "$RUN_INDEX"
-          jq --argjson next "$((RUN_INDEX + 1))" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson completed "$RUN_INDEX" '.run_index=$next | .last_completed_run_index=$completed | .last_completed_at=$now' state/scheduler_state.json > state/scheduler_state.tmp
+          next_index=$((RUN_INDEX + 1))
+          jq --argjson next "$next_index" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson completed "$RUN_INDEX" '.run_index=$next | .last_completed_run_index=$completed | .last_completed_at=$now' state/scheduler_state.json > state/scheduler_state.tmp
           mv state/scheduler_state.tmp state/scheduler_state.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state/scheduler_state.json
           git diff --cached --quiet && { echo "Scheduler state already current"; exit 0; }
-          git commit -m "Advance WebNovel scheduler to run $((RUN_INDEX + 1))"
+          git commit -m "Advance WebNovel scheduler to run $next_index"
           for attempt in 1 2 3; do
             if git push origin HEAD:main; then
               exit 0
             fi
             echo "Scheduler state push conflicted; refreshing main and retrying ($attempt/3)"
             git fetch origin main
+            remote_run=$(git show origin/main:state/scheduler_state.json | jq -e '.run_index | numbers')
+            if [[ "$remote_run" != "$RUN_INDEX" ]]; then
+              echo "Scheduler state changed remotely from $RUN_INDEX to $remote_run; refusing to overwrite it."
+              exit 1
+            fi
             git rebase origin/main
+            candidate=$(git show HEAD:state/scheduler_state.json | jq -e '.run_index | numbers')
+            test "$candidate" = "$next_index"
           done
           echo "Unable to atomically publish scheduler advancement after 3 attempts"
           exit 1
