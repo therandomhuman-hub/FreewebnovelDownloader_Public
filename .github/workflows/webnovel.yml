@@ -106,6 +106,38 @@ jobs:
           test "$run_index" -ge 0
           echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
           echo "Using tested private-engine revision: ${{ needs.healthcheck.outputs.engine_sha }}"
+      - name: Write immutable run manifest
+        env:
+          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
+          RUN_INDEX: ${{ steps.state.outputs.run_index }}
+          PUBLIC_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg engine_sha "$ENGINE_SHA" \
+            --arg public_sha "$PUBLIC_SHA" \
+            --argjson run_index "$RUN_INDEX" \
+            --argjson workflow_run_id "$RUN_ID" \
+            --argjson workflow_run_number "$RUN_NUMBER" \
+            --argjson worker_count "$WORKFLOW_COUNT" \
+            --argjson batch_size "$BATCH_SIZE" \
+            --argjson batches_per_run "$BATCHES_PER_RUN" \
+            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schema_version:1,workflow:"WebNovel Downloader",workflow_run_id:$workflow_run_id,workflow_run_number:$workflow_run_number,run_index:$run_index,engine_sha:$engine_sha,public_sha:$public_sha,worker_count:$worker_count,batch_size:$batch_size,batches_per_run:$batches_per_run,created_at:$created_at}' \
+            > run-manifest.json
+          jq empty run-manifest.json
+          sha256sum run-manifest.json | tee run-manifest.sha256
+      - name: Upload immutable run manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-run-manifest
+          path: |
+            run-manifest.json
+            run-manifest.sha256
+          if-no-files-found: error
+          retention-days: 30
 
   worker:
     needs: coordinator
@@ -188,6 +220,7 @@ jobs:
           set -euo pipefail
           test -s worker_result.json
           jq empty worker_result.json
+          jq -e '.rows | arrays' worker_result.json >/dev/null
           rid=$(jq -e '.workflow_id | numbers' worker_result.json)
           run=$(jq -e '.run_index | numbers' worker_result.json)
           total=$(jq -e '.workflow_count | numbers' worker_result.json)
@@ -200,16 +233,28 @@ jobs:
         env:
           WORKER_ID: ${{ matrix.worker }}
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
         run: |
           set -euo pipefail
-          if test -s worker_result.json; then
+          if test -s worker_result.json && jq empty worker_result.json >/dev/null 2>&1; then
             failed=$(jq -r '.failed // 0' worker_result.json)
             status=completed
+            result_sha256=$(sha256sum worker_result.json | awk '{print $1}')
           else
             failed=-1
             status=process_failed
+            result_sha256=""
           fi
-          jq -n --argjson worker "$WORKER_ID" --argjson run "$RUN_INDEX" --arg status "$status" --argjson failed "$failed" '{worker_id:$worker,run_index:$run,status:$status,failed:$failed}' > worker_execution_marker.json
+          jq -n \
+            --argjson worker "$WORKER_ID" \
+            --argjson run "$RUN_INDEX" \
+            --arg status "$status" \
+            --argjson failed "$failed" \
+            --arg engine_sha "$ENGINE_SHA" \
+            --arg result_sha256 "$result_sha256" \
+            '{schema_version:1,worker_id:$worker,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
+            > worker_execution_marker.json
+          jq empty worker_execution_marker.json
       - name: Upload worker result bundle
         if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -219,7 +264,7 @@ jobs:
             private-engine/worker_result.json
             private-engine/worker_execution_marker.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
 
   tracker:
     needs: [coordinator, worker]
@@ -228,6 +273,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -256,10 +302,11 @@ jobs:
           pattern: webnovel-worker-*
           path: results
           merge-multiple: false
-      - name: Validate result set and worker execution
+      - name: Validate result set, provenance, integrity, and worker execution
         id: result_check
         env:
           EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          EXPECTED_ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
         run: |
           set -euo pipefail
           mapfile -t markers < <(find results -type f -name worker_execution_marker.json | sort)
@@ -269,30 +316,52 @@ jobs:
             jq empty "$marker"
             rid=$(jq -e '.worker_id | numbers' "$marker")
             run=$(jq -e '.run_index | numbers' "$marker")
+            engine=$(jq -e '.engine_sha | strings' "$marker")
+            status=$(jq -e '.status | strings' "$marker")
+            failed=$(jq -e '.failed | numbers' "$marker")
+            result_sha=$(jq -r '.result_sha256 // ""' "$marker")
             test "$run" -eq "$EXPECTED_RUN_INDEX"
+            test "$engine" = "$EXPECTED_ENGINE_SHA"
             test "$rid" -ge 0
             test "$rid" -lt "$WORKFLOW_COUNT"
             [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate worker marker: $rid"; exit 1; }
             seen[$rid]=1
-            status=$(jq -r '.status' "$marker")
-            failed=$(jq -r '.failed' "$marker")
-            if [[ "$status" == "completed" && "$failed" -gt 0 ]]; then
-              echo "Worker $rid has per-novel failures: $failed. These rows remain retryable in Sheet2."
-            elif [[ "$status" != "completed" ]]; then
-              echo "Worker $rid did not produce a normal result: $status"
+            result_file=$(dirname "$marker")/worker_result.json
+            if [[ "$status" == "completed" ]]; then
+              test -s "$result_file"
+              test "$result_sha" = "$(sha256sum "$result_file" | awk '{print $1}')"
+              jq empty "$result_file"
+              jq -e '.rows | arrays' "$result_file" >/dev/null
+              [[ "$failed" -ge 0 ]] || { echo "Invalid per-novel failure count for worker $rid"; exit 1; }
+              if [[ "$failed" -gt 0 ]]; then
+                echo "Worker $rid has per-novel failures: $failed. These rows remain retryable in Sheet2."
+              fi
+            elif [[ "$status" == "process_failed" ]]; then
+              echo "Worker $rid failed at process level; scheduler state will NOT advance."
+              test "$failed" -eq -1
+            else
+              echo "Unknown worker status: $status"
+              exit 1
             fi
           done
           for expected in $(seq 0 $((WORKFLOW_COUNT - 1))); do
             [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker marker: $expected"; exit 1; }
           done
+          if grep -R -l '"status": "process_failed"' results/*/worker_execution_marker.json >/dev/null 2>&1; then
+            echo "At least one worker process failed. Do not reconcile or advance the production scheduler."
+            exit 1
+          fi
           echo "complete=true" >> "$GITHUB_OUTPUT"
       - name: Update split Google Sheet
+        if: ${{ steps.result_check.outputs.complete == 'true' }}
         working-directory: private-engine
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_COMPLETED_SHEET: Sheet1
           GOOGLE_ONGOING_SHEET: Sheet2
+          SHEETS_HTTP_TIMEOUT_SECONDS: "120"
+          SHEETS_RETRY_ATTEMPTS: "7"
         run: python sheet_aggregator.py ../results
       - name: Upload tracker summary
         if: always()
@@ -301,8 +370,8 @@ jobs:
           name: webnovel-tracker-summary
           path: private-engine/tracker_summary.json
           if-no-files-found: ignore
-          retention-days: 7
-      - name: Advance scheduler state only after every worker reported
+          retention-days: 30
+      - name: Advance scheduler state only after every worker succeeded
         if: ${{ success() && steps.result_check.outputs.complete == 'true' }}
         working-directory: scheduler-state
         env:
@@ -318,4 +387,13 @@ jobs:
           git add state/scheduler_state.json
           git diff --cached --quiet && { echo "Scheduler state already current"; exit 0; }
           git commit -m "Advance WebNovel scheduler to run $((RUN_INDEX + 1))"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Scheduler state push conflicted; refreshing main and retrying ($attempt/3)"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "Unable to atomically publish scheduler advancement after 3 attempts"
+          exit 1
