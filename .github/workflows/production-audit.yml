@@ -67,6 +67,7 @@ jobs:
             .github/workflows/webnovel.yml \
             .github/workflows/webnovel-discovery-primary.yml \
             .github/workflows/monthly-ongoing-recheck.yml \
+            .github/workflows/webnovel-tracker-reconcile.yml \
             .github/workflows/webnovel-tracker-recovery.yml; do
             test -s "$file"
           done
@@ -76,31 +77,64 @@ jobs:
             ../private-engine/drive_source_metadata.py \
             ../private-engine/community_library_entrypoint.py \
             ../private-engine/monthly_community_entrypoint.py \
+            ../private-engine/sheet_aggregator.py \
             ../private-engine/tests/test_core.py; do
             test -s "$file"
           done
-      - name: Verify primary recursive discovery is enabled
+      - name: Verify primary recursive discovery is fail-closed
         working-directory: public-repo
         run: |
           set -euo pipefail
           grep -q 'DISCOVERY_MODE: "primary"' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'DISCOVERY_REQUIRE_REMOTE_STATE: "true"' .github/workflows/webnovel-discovery-primary.yml
+          grep -q 'DISCOVERY_STATE_FOLDER_REQUIRED: "true"' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'GOOGLE_DRIVE_CLIENT_ID:' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'DISCOVERY_ROOTS' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'discovery_crawler.py' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'same_site_recursive' ../private-engine/discovery_crawler.py
-      - name: Verify downloader pins one private-engine revision per run
+      - name: Verify immutable run provenance
         working-directory: public-repo
         run: |
           set -euo pipefail
+          grep -q 'Write immutable run manifest' .github/workflows/webnovel.yml
+          grep -q 'webnovel-run-manifest' .github/workflows/webnovel.yml
           grep -q 'engine_sha:' .github/workflows/webnovel.yml
           grep -q 'ref: ${{ needs.coordinator.outputs.engine_sha }}' .github/workflows/webnovel.yml
+          grep -q 'result_sha256' .github/workflows/webnovel.yml
+      - name: Verify process failures cannot advance scheduler state
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'process_failed' .github/workflows/webnovel.yml
+          grep -q 'Do not reconcile or advance the production scheduler' .github/workflows/webnovel.yml
+          grep -q 'Advance scheduler state only after every worker succeeded' .github/workflows/webnovel.yml
+      - name: Verify tracker reconciliation uses exact historical engine revision
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'webnovel-run-manifest' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'engine_sha' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'sha256sum -c run-manifest.sha256' .github/workflows/webnovel-tracker-reconcile.yml
+      - name: Verify tracker writes are fail-closed
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          grep -q 'verify_written_tabs' sheet_aggregator.py
+          grep -q 'Conflicting duplicate worker rows' sheet_aggregator.py
+          grep -q 'AuthorizedHttp' sheet_aggregator.py
       - name: Verify manual tests never advance production scheduler
         working-directory: public-repo
         run: |
           set -euo pipefail
           grep -q "github.event_name == 'schedule'" .github/workflows/webnovel.yml
           grep -q "github.event_name == 'schedule'" .github/workflows/monthly-ongoing-recheck.yml
+      - name: Verify scheduler state push has conflict recovery
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'git rebase origin/main' .github/workflows/webnovel.yml
+          grep -q 'for attempt in 1 2 3' .github/workflows/webnovel.yml
       - name: Verify no obsolete retry wrapper remains
         working-directory: private-engine
         run: test ! -e run_worker_retry.py
