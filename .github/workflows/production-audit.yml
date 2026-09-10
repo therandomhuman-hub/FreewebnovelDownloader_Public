@@ -158,6 +158,16 @@ jobs:
           grep -q 'engine_sha:' .github/workflows/webnovel.yml
           grep -q 'ref: ${{ needs.coordinator.outputs.engine_sha }}' .github/workflows/webnovel.yml
           grep -q 'result_sha256' .github/workflows/webnovel.yml
+      - name: Verify worker result metadata matches provenance
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'rid=$(jq -e '\''.workflow_id | numbers'\'' "$result_file")' .github/workflows/webnovel.yml
+          grep -q 'run=$(jq -e '\''.run_index | numbers'\'' "$result_file")' .github/workflows/webnovel.yml
+          grep -q 'total=$(jq -e '\''.workflow_count | numbers'\'' "$result_file")' .github/workflows/webnovel.yml
+          grep -q 'test "$rid" -eq "$EXPECTED_WORKER"' .github/workflows/webnovel.yml
+          grep -q 'test "$run" -eq "$EXPECTED_RUN_INDEX"' .github/workflows/webnovel.yml
+          grep -q 'test "$total" -eq "${WORKFLOW_COUNT}"' .github/workflows/webnovel.yml
       - name: Verify process failures cannot advance scheduler state
         working-directory: public-repo
         run: |
@@ -182,6 +192,14 @@ jobs:
           grep -q 'Duplicate URL exists across tracker tabs' sheet_aggregator.py
           grep -q 'AuthorizedHttp' sheet_aggregator.py
           grep -q 'return download_status in SUCCESS_DOWNLOAD_STATUSES and bool(drive_file_id)' sheet_aggregator.py
+      - name: Verify health check is read-only for Sheets
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          grep -q 'def check_sheets' health_check.py
+          ! grep -q 'spreadsheets().batchUpdate' health_check.py
+          ! grep -q 'requests().batchUpdate' health_check.py
+          grep -q 'values().get' health_check.py
       - name: Verify manual tests never advance production scheduler
         working-directory: public-repo
         run: |
