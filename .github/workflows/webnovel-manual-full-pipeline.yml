@@ -270,21 +270,43 @@ jobs:
             --arg result_sha256 "$sha256" \
             '{schema_version:1,worker_id:$worker,run_index:$run,status:$status,failed:0,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
             > private-engine/worker_execution_marker.json
-      - name: Validate worker bundle before upload
+      - name: Normalize and validate worker bundle
         if: ${{ always() }}
+        env:
+          EXPECTED_WORKER: ${{ matrix.worker }}
+          EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          EXPECTED_ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
         run: |
           set -euo pipefail
           test -s private-engine/worker_result.json
           test -s private-engine/worker_execution_marker.json
           jq empty private-engine/worker_result.json
           jq empty private-engine/worker_execution_marker.json
-          test "$(jq -e '.workflow_id | numbers' private-engine/worker_result.json)" -eq '${{ matrix.worker }}'
-          test "$(jq -e '.run_index | numbers' private-engine/worker_result.json)" -eq '${{ needs.coordinator.outputs.run_index }}'
+          test "$(jq -e '.workflow_id | numbers' private-engine/worker_result.json)" -eq "$EXPECTED_WORKER"
+          test "$(jq -e '.run_index | numbers' private-engine/worker_result.json)" -eq "$EXPECTED_RUN_INDEX"
           test "$(jq -e '.workflow_count | numbers' private-engine/worker_result.json)" -eq "$WORKFLOW_COUNT"
-          test "$(jq -e '.worker_id | numbers' private-engine/worker_execution_marker.json)" -eq '${{ matrix.worker }}'
-          test "$(jq -e '.run_index | numbers' private-engine/worker_execution_marker.json)" -eq '${{ needs.coordinator.outputs.run_index }}'
-          test "$(jq -e '.engine_sha | strings' private-engine/worker_execution_marker.json)" = '${{ needs.coordinator.outputs.engine_sha }}'
-          test "$(jq -e '.result_sha256 | strings' private-engine/worker_execution_marker.json)" = "$(sha256sum private-engine/worker_result.json | awk '{print $1}')"
+          test "$(jq -e '.worker_id | numbers' private-engine/worker_execution_marker.json)" -eq "$EXPECTED_WORKER"
+          test "$(jq -e '.run_index | numbers' private-engine/worker_execution_marker.json)" -eq "$EXPECTED_RUN_INDEX"
+          test "$(jq -e '.engine_sha | strings' private-engine/worker_execution_marker.json)" = "$EXPECTED_ENGINE_SHA"
+          status=$(jq -r '.status' private-engine/worker_execution_marker.json)
+          failed=$(jq -r '.failed' private-engine/worker_execution_marker.json)
+          case "$status" in
+            completed)
+              test "$failed" -ge 0
+              ;;
+            process_failed)
+              test "$failed" -eq -1
+              ;;
+            *)
+              echo "Unknown worker status: $status"
+              exit 1
+              ;;
+          esac
+          sha256=$(sha256sum private-engine/worker_result.json | awk '{print $1}')
+          jq --arg sha "$sha256" '.result_sha256=$sha' private-engine/worker_execution_marker.json > private-engine/worker_execution_marker.normalized.json
+          mv private-engine/worker_execution_marker.normalized.json private-engine/worker_execution_marker.json
+          jq empty private-engine/worker_execution_marker.json
+          test "$(jq -r '.result_sha256' private-engine/worker_execution_marker.json)" = "$sha256"
       - name: Upload worker result bundle
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -363,7 +385,8 @@ jobs:
             seen[$rid]=1
             result_file=$(dirname "$marker")/worker_result.json
             test -s "$result_file"
-            test "$result_sha" = "$(sha256sum "$result_file" | awk '{print $1}')"
+            actual_sha=$(sha256sum "$result_file" | awk '{print $1}')
+            test "$result_sha" = "$actual_sha"
             jq empty "$result_file"
             jq -e '.rows | arrays' "$result_file" >/dev/null
             result_workflow=$(jq -e '.workflow_id | numbers' "$result_file")
@@ -393,16 +416,13 @@ jobs:
         if: ${{ steps.result_check.outputs.complete == 'true' }}
         working-directory: private-engine
         env:
-          GOOGLE_SHEET_ID: manual-test-placeholder
-          GOOGLE_COMPLETED_SHEET: Sheet1
-          GOOGLE_ONGOING_SHEET: Sheet2
-          RUN_ID: ${{ github.run_id }}
-          ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
-          RESULTS_ROOT: ../results
+          RESULTS_ROOT: ${{ github.workspace }}/results
+          GOOGLE_SHEET_ID: manual-test-no-production-write
+          GOOGLE_SERVICE_ACCOUNT_JSON: manual-test-no-production-write
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json
+          import json, os
           from pathlib import Path
           import sheet_aggregator
 
@@ -412,13 +432,13 @@ jobs:
                   self.action = action
               def execute(self):
                   if self.action:
-                      self.action()
+                      return self.action()
                   return self.result or {}
 
           class Values:
               def __init__(self, storage):
                   self.storage = storage
-              def clear(self, spreadsheetId=None, range=None):
+              def clear(self, spreadsheetId=None, range=None, body=None):
                   def action():
                       tab = range.split('!')[0]
                       self.storage[tab] = []
@@ -434,7 +454,7 @@ jobs:
 
           class Sheets:
               def __init__(self):
-                  self.storage = {'Sheet1': [], 'Sheet2': []}
+                  self.storage = {'Sheet1': [sheet_aggregator.HEADER], 'Sheet2': [sheet_aggregator.HEADER]}
               def values(self):
                   return Values(self.storage)
 
@@ -446,7 +466,7 @@ jobs:
 
           fake = FakeAPI()
           sheet_aggregator.service = lambda: fake
-          root = __import__('os').environ['RESULTS_ROOT']
+          root = os.environ['RESULTS_ROOT']
           sheet_aggregator.main(root)
           summary = json.loads(Path('tracker_summary.json').read_text(encoding='utf-8'))
           assert summary['incoming_rows'] >= 1, summary
@@ -460,8 +480,8 @@ jobs:
           before=$(awk '{print $1}' ../scheduler-state-before.sha256)
           after=$(sha256sum state/scheduler_state.json | awk '{print $1}')
           test "$before" = "$after"
-          echo "SCHEDULER_STATE_UNCHANGED=true"
           jq empty state/scheduler_state.json
+          echo "SCHEDULER_STATE_UNCHANGED=true"
       - name: Upload tracker simulation summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
