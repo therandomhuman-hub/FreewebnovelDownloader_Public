@@ -26,7 +26,7 @@ jobs:
           path: public-repo
           fetch-depth: 1
       - name: Checkout private engine
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ee4b97
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
