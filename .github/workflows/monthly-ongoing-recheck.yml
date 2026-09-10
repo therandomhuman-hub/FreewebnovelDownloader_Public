@@ -27,7 +27,7 @@ env:
   GOOGLE_ONGOING_SHEET: "Sheet2"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
   COMMUNITY_LIBRARY_POLL_SECONDS: "300"
-  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "2147483647"
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "18000"
   COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
 
 concurrency:
@@ -121,6 +121,8 @@ jobs:
           COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
+          SHEETS_HTTP_TIMEOUT_SECONDS: "120"
+          SHEETS_RETRY_ATTEMPTS: "7"
         run: python monthly_community_entrypoint.py
       - name: Validate monthly worker result
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
@@ -206,6 +208,8 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
           GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+          SHEETS_HTTP_TIMEOUT_SECONDS: "120"
+          SHEETS_RETRY_ATTEMPTS: "7"
         run: python sheet_aggregator.py ../results
       - name: Upload monthly tracker summary
         if: always()
