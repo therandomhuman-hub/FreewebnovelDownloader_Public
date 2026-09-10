@@ -33,7 +33,7 @@ jobs:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
-          persist-credentials: false
+          persist-credentials: true
 
       - uses: actions/setup-python@v7
         with:
