@@ -28,24 +28,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout private engine
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
-
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-
       - name: Resolve requested workflow runs
         id: resolve
         env:
@@ -54,44 +51,26 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json
-          import os
-          import subprocess
-
-          requested = []
+          import json, os, subprocess
+          requested=[]
           for raw in os.environ["RUN_NUMBERS"].split(","):
-              raw = raw.strip()
-              if not raw:
-                  continue
-              if not raw.isdigit():
-                  raise SystemExit(f"Invalid workflow run number: {raw!r}")
+              raw=raw.strip()
+              if not raw: continue
+              if not raw.isdigit(): raise SystemExit(f"Invalid workflow run number: {raw!r}")
               requested.append(int(raw))
-          if not requested:
-              raise SystemExit("run_numbers must contain at least one workflow run number")
-          if requested != sorted(set(requested)):
-              raise SystemExit("run_numbers must be unique and listed oldest first")
-
-          raw = subprocess.check_output([
-              "gh", "run", "list",
-              "--repo", os.environ["GITHUB_REPOSITORY"],
-              "--workflow", "webnovel.yml",
-              "--limit", "100",
-              "--json", "number,databaseId,conclusion,status",
-          ], text=True)
-          runs = {int(r["number"]): r for r in json.loads(raw)}
-
-          resolved = []
+          if not requested: raise SystemExit("run_numbers must contain at least one workflow run number")
+          if requested != sorted(set(requested)): raise SystemExit("run_numbers must be unique and listed oldest first")
+          raw=subprocess.check_output(["gh","run","list","--repo",os.environ["GITHUB_REPOSITORY"],"--workflow","webnovel.yml","--limit","100","--json","number,databaseId,status,conclusion"],text=True)
+          runs={int(r["number"]):r for r in json.loads(raw)}
+          resolved=[]
           for number in requested:
-              run = runs.get(number)
-              if not run:
-                  raise SystemExit(f"WebNovel Downloader run #{number} was not found in the recent run list")
-              resolved.append({"number": number, "databaseId": int(run["databaseId"]), "status": run["status"], "conclusion": run["conclusion"]})
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write("runs=" + json.dumps(resolved, separators=(",", ":")) + "\n")
-          print(json.dumps(resolved, indent=2))
+              run=runs.get(number)
+              if not run: raise SystemExit(f"WebNovel Downloader run #{number} was not found in the recent run list")
+              resolved.append({"number":number,"databaseId":int(run["databaseId"]),"status":run["status"],"conclusion":run["conclusion"]})
+          with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as fh:
+              fh.write("runs="+json.dumps(resolved,separators=(",",":"))+"\n")
+          print(json.dumps(resolved,indent=2))
           PY
-
       - name: Download historical worker artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,30 +78,16 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json
-          import os
-          import pathlib
-          import subprocess
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          runs = json.loads(os.environ["RESOLVED_RUNS"])
-          root = pathlib.Path("recovery")
-          root.mkdir(exist_ok=True)
-
+          import json, os, pathlib, subprocess
+          repo=os.environ["GITHUB_REPOSITORY"]
+          runs=json.loads(os.environ["RESOLVED_RUNS"])
+          root=pathlib.Path("recovery"); root.mkdir(exist_ok=True)
           for run in runs:
-              number = int(run["number"])
-              database_id = int(run["databaseId"])
-              destination = root / f"run-{number}"
-              destination.mkdir(parents=True, exist_ok=True)
+              number=int(run["number"]); database_id=int(run["databaseId"])
+              destination=root/f"run-{number}"; destination.mkdir(parents=True,exist_ok=True)
               print(f"Downloading worker artifacts for WebNovel Downloader #{number} (run id {database_id})")
-              subprocess.run([
-                  "gh", "run", "download", str(database_id),
-                  "--repo", repo,
-                  "--pattern", "webnovel-worker-*",
-                  "--dir", str(destination),
-              ], check=True)
+              subprocess.run(["gh","run","download",str(database_id),"--repo",repo,"--pattern","webnovel-worker-*","--dir",str(destination)],check=True)
           PY
-
       - name: Show recovered artifacts
         run: |
           set -euo pipefail
@@ -130,7 +95,6 @@ jobs:
           count=$(find recovery -type f -name worker_result.json | wc -l)
           test "$count" -gt 0
           echo "Recovered worker result artifacts: $count"
-
       - name: Recover trackers oldest first
         working-directory: private-engine
         env:
@@ -142,27 +106,21 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json
-          import os
-          import subprocess
-
-          runs = json.loads(os.environ["RESOLVED_RUNS"])
+          import json, os, subprocess
+          runs=json.loads(os.environ["RESOLVED_RUNS"])
           for run in runs:
-              number = int(run["number"])
-              root = os.path.join("..", "recovery", f"run-{number}")
+              number=int(run["number"]); root=os.path.join("..","recovery",f"run-{number}")
               print(f"=== Recovering WebNovel Downloader #{number} ===")
-              subprocess.run(["python", "sheet_aggregator.py", root], check=True)
-              print(open("tracker_summary.json", encoding="utf-8").read())
+              subprocess.run(["python","sheet_aggregator.py",root],check=True)
+              print(open("tracker_summary.json",encoding="utf-8").read())
           PY
-
       - name: Verify scheduler state was not touched
         run: |
           set -euo pipefail
           echo "Historical tracker recovery completed without checking out or modifying scheduler state."
-
       - name: Upload recovery summaries
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: webnovel-tracker-recovery-summary
           path: private-engine/tracker_summary.json
