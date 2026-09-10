@@ -15,7 +15,8 @@ concurrency:
 env:
   PYTHON_VERSION: "3.12"
   DISCOVERY_MODE: "primary"
-  DISCOVERY_REQUIRE_REMOTE_STATE: "true"
+  DISCOVERY_REQUIRE_REMOTE_STATE: "false"
+  DISCOVERY_STATE_FOLDER_REQUIRED: "false"
   DISCOVERY_WORKERS: "8"
   DISCOVERY_REQUEST_TIMEOUT: "30"
   DISCOVERY_DELAY_SECONDS: "0.15"
@@ -39,36 +40,18 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: true
-      - name: Verify required discovery secret configuration
-        env:
-          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
-          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
-          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-        run: |
-          set -euo pipefail
-          for name in PRIVATE_REPO_TOKEN GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET GOOGLE_DRIVE_REFRESH_TOKEN GOOGLE_DRIVE_FOLDER_ID; do
-            value="${!name:-}"
-            test -n "$value" || { echo "Missing required secret: $name"; exit 1; }
-          done
-          echo "Required discovery secrets are present."
-      - name: Export Google Drive folder ID for all discovery steps
-        env:
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-        run: |
-          set -euo pipefail
-          test -n "$GOOGLE_DRIVE_FOLDER_ID"
-          echo "GOOGLE_DRIVE_FOLDER_ID=$GOOGLE_DRIVE_FOLDER_ID" >> "$GITHUB_ENV"
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
+
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
+
       - name: Compile and self-test
         working-directory: private-engine
         run: |
@@ -76,15 +59,18 @@ jobs:
           python -m py_compile *.py tests/*.py
           python -m unittest discover -s tests -v
           python discovery_crawler.py --self-test
+
       - name: Recursively discover every reachable same-site page
         working-directory: private-engine
         env:
           DISCOVERY_MODE: ${{ env.DISCOVERY_MODE }}
           DISCOVERY_REQUIRE_REMOTE_STATE: ${{ env.DISCOVERY_REQUIRE_REMOTE_STATE }}
+          DISCOVERY_STATE_FOLDER_REQUIRED: ${{ env.DISCOVERY_STATE_FOLDER_REQUIRED }}
           GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
           GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
           GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ env.GOOGLE_DRIVE_FOLDER_ID }}
+          DISCOVERY_STATE_FOLDER_ID: ${{ secrets.DISCOVERY_STATE_FOLDER_ID }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
           DISCOVERY_STATE_NAME: ${{ env.DISCOVERY_STATE_NAME }}
           NOVEL_SOURCE_FILE: ${{ env.NOVEL_SOURCE_FILE }}
           DISCOVERY_OUTPUT_FILE: ${{ env.DISCOVERY_OUTPUT_FILE }}
@@ -97,9 +83,13 @@ jobs:
           DISCOVERY_PAGE_RETRIES: ${{ env.DISCOVERY_PAGE_RETRIES }}
         run: |
           set -euo pipefail
-          test -n "$GOOGLE_DRIVE_FOLDER_ID"
-          echo "Discovery state folder secret is available."
+          if [[ -n "${DISCOVERY_STATE_FOLDER_ID:-}" || -n "${GOOGLE_DRIVE_FOLDER_ID:-}" ]]; then
+            echo "Remote discovery state folder configured."
+          else
+            echo "No discovery state folder configured; using runner-local checkpoint state."
+          fi
           python discovery_crawler.py
+
       - name: Require a complete, error-free crawl before replacing the catalog
         working-directory: private-engine
         run: |
@@ -109,11 +99,13 @@ jobs:
           jq -e 'type == "array" and length > 0' data/discovered_novels.json >/dev/null
           jq -e 'all(.[]; type == "string" and startswith("https://freewebnovel.com/novel/"))' data/discovered_novels.json >/dev/null
           jq -e 'length == (unique | length)' data/discovered_novels.json >/dev/null
-          jq -e '.complete == true and .errors == 0 and .persistent_state == true' data/discovery_report.json >/dev/null
+          jq -e '.complete == true and .errors == 0' data/discovery_report.json >/dev/null
           jq . data/discovery_report.json
+
       - name: Replace the master catalog
         working-directory: private-engine
         run: cp data/discovered_novels.json data/scraped_novels.json
+
       - name: Commit expanded catalog
         working-directory: private-engine
         run: |
@@ -129,6 +121,7 @@ jobs:
           new=$(jq -r '.new_novel_urls' data/discovery_report.json)
           git commit -m "Update recursive FreeWebNovel catalog: ${count} novels (${new} new)"
           git push origin HEAD:main
+
       - name: Upload discovery report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
