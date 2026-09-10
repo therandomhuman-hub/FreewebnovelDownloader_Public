@@ -1,0 +1,109 @@
+name: WebNovel Tracker Reconcile
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Completed WebNovel Downloader run ID whose worker artifacts should be reconciled"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  GOOGLE_COMPLETED_SHEET: "Sheet1"
+  GOOGLE_ONGOING_SHEET: "Sheet2"
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate run ID
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run_id must be numeric"; exit 1; }
+          echo "Reconciling WebNovel Downloader run $RUN_ID"
+
+      - name: Download worker artifacts from run
+        uses: actions/github-script@v7
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        with:
+          script: |
+            const fs = require('fs');
+            const runId = Number(process.env.RUN_ID);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: runId, per_page: 100 }
+            );
+            const wanted = artifacts.filter(a => a.name.startsWith('webnovel-worker-') && !a.expired);
+            if (!wanted.length) core.setFailed(`No worker artifacts found for run ${runId}`);
+            fs.mkdirSync('results', { recursive: true });
+            for (const artifact of wanted) {
+              const response = await github.rest.actions.downloadArtifact({
+                owner, repo, artifact_id: artifact.id, archive_format: 'zip'
+              });
+              fs.writeFileSync(`results/${artifact.name}.zip`, Buffer.from(response.data));
+              core.info(`Downloaded ${artifact.name}`);
+            }
+
+      - name: Extract worker artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          for zip in results/*.zip; do
+            name=$(basename "$zip" .zip)
+            mkdir -p "extracted/$name"
+            unzip -q "$zip" -d "extracted/$name"
+          done
+          find extracted -type f -maxdepth 3 -print
+
+      - name: Checkout private engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Reconcile Sheet1 and Sheet2 from existing worker results
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
+          GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          python sheet_aggregator.py ../extracted
+          echo "Tracker reconciliation completed for downloader run $RUN_ID"
+          test -s tracker_summary.json
+          cat tracker_summary.json
+
+      - name: Upload reconciliation summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-tracker-reconciliation-${{ inputs.run_id }}
+          path: private-engine/tracker_summary.json
+          if-no-files-found: ignore
+          retention-days: 30
