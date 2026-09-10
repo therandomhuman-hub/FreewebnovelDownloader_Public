@@ -65,7 +65,6 @@ jobs:
           set -euo pipefail
           for file in \
             .github/workflows/webnovel.yml \
-            .github/workflows/webnovel-discovery.yml \
             .github/workflows/webnovel-discovery-primary.yml \
             .github/workflows/monthly-ongoing-recheck.yml \
             .github/workflows/webnovel-tracker-recovery.yml; do
@@ -90,6 +89,18 @@ jobs:
           grep -q 'DISCOVERY_ROOTS' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'discovery_crawler.py' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'same_site_recursive' ../private-engine/discovery_crawler.py
+      - name: Verify downloader pins one private-engine revision per run
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'engine_sha:' .github/workflows/webnovel.yml
+          grep -q 'ref: ${{ needs.coordinator.outputs.engine_sha }}' .github/workflows/webnovel.yml
+      - name: Verify manual tests never advance production scheduler
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q "github.event_name == 'schedule'" .github/workflows/webnovel.yml
+          grep -q "github.event_name == 'schedule'" .github/workflows/monthly-ongoing-recheck.yml
       - name: Verify no obsolete retry wrapper remains
         working-directory: private-engine
         run: test ! -e run_worker_retry.py
