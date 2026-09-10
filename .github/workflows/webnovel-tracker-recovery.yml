@@ -25,25 +25,9 @@ concurrency:
 jobs:
   recover:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
-      - name: Checkout private engine
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: therandomhuman-hub/FreewebnovelDownloader_Private
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: private-engine
-          persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: private-engine/requirements.txt
-      - name: Install dependencies
-        working-directory: private-engine
-        run: python -m pip install -r requirements.txt
-      - name: Resolve requested workflow runs
+      - name: Validate requested run numbers
         id: resolve
         env:
           RUN_NUMBERS: ${{ inputs.run_numbers }}
@@ -66,12 +50,14 @@ jobs:
           for number in requested:
               run=runs.get(number)
               if not run: raise SystemExit(f"WebNovel Downloader run #{number} was not found in the recent run list")
+              if run["status"] != "completed": raise SystemExit(f"WebNovel Downloader run #{number} is not completed")
               resolved.append({"number":number,"databaseId":int(run["databaseId"]),"status":run["status"],"conclusion":run["conclusion"]})
           with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as fh:
               fh.write("runs="+json.dumps(resolved,separators=(",",":"))+"\n")
           print(json.dumps(resolved,indent=2))
           PY
-      - name: Download historical worker artifacts
+
+      - name: Download historical manifests and worker artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           RESOLVED_RUNS: ${{ steps.resolve.outputs.runs }}
@@ -85,18 +71,71 @@ jobs:
           for run in runs:
               number=int(run["number"]); database_id=int(run["databaseId"])
               destination=root/f"run-{number}"; destination.mkdir(parents=True,exist_ok=True)
-              print(f"Downloading worker artifacts for WebNovel Downloader #{number} (run id {database_id})")
-              subprocess.run(["gh","run","download",str(database_id),"--repo",repo,"--pattern","webnovel-worker-*","--dir",str(destination)],check=True)
+              print(f"Downloading manifest and worker artifacts for WebNovel Downloader #{number} (run id {database_id})")
+              subprocess.run(["gh","run","download",str(database_id),"--repo",repo,"--pattern","webnovel-run-manifest","--dir",str(destination/"manifest")],check=True)
+              subprocess.run(["gh","run","download",str(database_id),"--repo",repo,"--pattern","webnovel-worker-*","--dir",str(destination/"workers")],check=True)
           PY
-      - name: Show recovered artifacts
+
+      - name: Checkout private engine with credentials for exact historical commits
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Verify manifests and worker integrity
+        env:
+          RESOLVED_RUNS: ${{ steps.resolve.outputs.runs }}
         run: |
           set -euo pipefail
-          find recovery -type f -name worker_result.json -print | sort
-          count=$(find recovery -type f -name worker_result.json | wc -l)
-          test "$count" -gt 0
-          echo "Recovered worker result artifacts: $count"
-      - name: Recover trackers oldest first
-        working-directory: private-engine
+          python - <<'PY'
+          import json, os, pathlib, re, subprocess
+          runs=json.loads(os.environ["RESOLVED_RUNS"])
+          for run in runs:
+              number=int(run["number"])
+              root=pathlib.Path("recovery")/f"run-{number}"
+              manifest_dir=root/"manifest"
+              manifest_files=list(manifest_dir.rglob("run-manifest.json"))
+              checksum_files=list(manifest_dir.rglob("run-manifest.sha256"))
+              if len(manifest_files)!=1 or len(checksum_files)!=1:
+                  raise SystemExit(f"Run #{number}: manifest files missing or duplicated")
+              subprocess.run(["sha256sum","-c",str(checksum_files[0])],cwd=manifest_files[0].parent,check=True)
+              manifest=json.loads(manifest_files[0].read_text(encoding="utf-8"))
+              if manifest.get("workflow") != "WebNovel Downloader": raise SystemExit(f"Run #{number}: wrong manifest workflow")
+              if int(manifest.get("workflow_run_id")) != int(run["databaseId"]): raise SystemExit(f"Run #{number}: manifest run ID mismatch")
+              if int(manifest.get("worker_count")) != 20: raise SystemExit(f"Run #{number}: unexpected worker count")
+              engine=str(manifest.get("engine_sha",""))
+              if not re.fullmatch(r"[0-9a-f]{40}",engine): raise SystemExit(f"Run #{number}: invalid engine SHA")
+              workers=sorted(root.joinpath("workers").glob("**/worker_execution_marker.json"))
+              if len(workers)!=20: raise SystemExit(f"Run #{number}: expected 20 worker markers, found {len(workers)}")
+              seen=set()
+              for marker_path in workers:
+                  marker=json.loads(marker_path.read_text(encoding="utf-8"))
+                  rid=int(marker["worker_id"]); status=marker["status"]
+                  if rid in seen or not 0 <= rid < 20: raise SystemExit(f"Run #{number}: invalid/duplicate worker {rid}")
+                  seen.add(rid)
+                  if int(marker["run_index"]) != int(manifest["run_index"]): raise SystemExit(f"Run #{number}: worker {rid} run index mismatch")
+                  if marker.get("engine_sha") != engine: raise SystemExit(f"Run #{number}: worker {rid} engine SHA mismatch")
+                  if status != "completed": raise SystemExit(f"Run #{number}: worker {rid} has process status {status}; recovery is not permitted")
+                  result=marker_path.parent/"worker_result.json"
+                  if not result.is_file(): raise SystemExit(f"Run #{number}: worker {rid} result missing")
+                  actual=subprocess.check_output(["sha256sum",str(result)],text=True).split()[0]
+                  if actual != marker.get("result_sha256"): raise SystemExit(f"Run #{number}: worker {rid} result hash mismatch")
+                  payload=json.loads(result.read_text(encoding="utf-8"))
+                  if not isinstance(payload.get("rows"),list): raise SystemExit(f"Run #{number}: worker {rid} rows are not an array")
+              print(f"Run #{number}: provenance and integrity checks passed; engine={engine}")
+          PY
+
+      - name: Recover trackers oldest first using exact historical engine revision
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
@@ -106,18 +145,26 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, subprocess
+          import json, os, pathlib, subprocess
           runs=json.loads(os.environ["RESOLVED_RUNS"])
           for run in runs:
-              number=int(run["number"]); root=os.path.join("..","recovery",f"run-{number}")
-              print(f"=== Recovering WebNovel Downloader #{number} ===")
-              subprocess.run(["python","sheet_aggregator.py",root],check=True)
-              print(open("tracker_summary.json",encoding="utf-8").read())
+              number=int(run["number"])
+              root=pathlib.Path("recovery")/f"run-{number}"
+              manifest=json.loads(next(root.joinpath("manifest").rglob("run-manifest.json")).read_text(encoding="utf-8"))
+              engine=manifest["engine_sha"]
+              print(f"=== Recovering WebNovel Downloader #{number} with engine {engine} ===")
+              subprocess.run(["git","fetch","origin",engine],cwd="private-engine",check=True)
+              subprocess.run(["git","checkout","--detach",engine],cwd="private-engine",check=True)
+              subprocess.run(["python","-m","pip","install","-r","requirements.txt"],cwd="private-engine",check=True)
+              subprocess.run(["python","sheet_aggregator.py",str(root.joinpath("workers").resolve())],cwd="private-engine",check=True)
+              print(pathlib.Path("private-engine/tracker_summary.json").read_text(encoding="utf-8"))
           PY
+
       - name: Verify scheduler state was not touched
         run: |
           set -euo pipefail
           echo "Historical tracker recovery completed without checking out or modifying scheduler state."
+
       - name: Upload recovery summaries
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -125,4 +172,4 @@ jobs:
           name: webnovel-tracker-recovery-summary
           path: private-engine/tracker_summary.json
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
