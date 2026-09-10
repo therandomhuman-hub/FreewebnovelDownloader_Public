@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Completed WebNovel Downloader run ID whose worker artifacts should be reconciled"
+        description: "WebNovel Downloader run ID whose worker artifacts should be reconciled"
         required: true
         type: string
 
@@ -15,11 +15,13 @@ env:
   PYTHON_VERSION: "3.12"
   GOOGLE_COMPLETED_SHEET: "Sheet1"
   GOOGLE_ONGOING_SHEET: "Sheet2"
+  SHEETS_HTTP_TIMEOUT_SECONDS: "120"
+  SHEETS_RETRY_ATTEMPTS: "7"
 
 jobs:
   reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Validate run ID
         env:
@@ -39,12 +41,27 @@ jobs:
             const runId = Number(process.env.RUN_ID);
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const run = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+            if (run.data.name !== 'WebNovel Downloader') {
+              core.setFailed(`Run ${runId} belongs to workflow '${run.data.name}', not 'WebNovel Downloader'`);
+              return;
+            }
             const artifacts = await github.paginate(
               github.rest.actions.listWorkflowRunArtifacts,
               { owner, repo, run_id: runId, per_page: 100 }
             );
-            const wanted = artifacts.filter(a => a.name.startsWith('webnovel-worker-') && !a.expired);
-            if (!wanted.length) core.setFailed(`No worker artifacts found for run ${runId}`);
+            const wanted = artifacts.filter(a => /^webnovel-worker-(?:[0-9]+)$/.test(a.name) && !a.expired);
+            const expected = new Set(Array.from({length: 20}, (_, i) => `webnovel-worker-${i}`));
+            if (wanted.length !== expected.size) {
+              core.setFailed(`Expected 20 non-expired worker artifacts; found ${wanted.length} for run ${runId}`);
+              return;
+            }
+            for (const name of expected) {
+              if (!wanted.some(a => a.name === name)) {
+                core.setFailed(`Missing artifact ${name} for run ${runId}`);
+                return;
+              }
+            }
             fs.mkdirSync('results', { recursive: true });
             for (const artifact of wanted) {
               const response = await github.rest.actions.downloadArtifact({
@@ -63,7 +80,9 @@ jobs:
             mkdir -p "extracted/$name"
             unzip -q "$zip" -d "extracted/$name"
           done
-          find extracted -type f -maxdepth 3 -print
+          count=$(find extracted -type f -name worker_result.json | wc -l)
+          test "$count" -eq 20
+          echo "Extracted $count worker results."
 
       - name: Checkout private engine
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -91,6 +110,8 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
           GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+          SHEETS_HTTP_TIMEOUT_SECONDS: ${{ env.SHEETS_HTTP_TIMEOUT_SECONDS }}
+          SHEETS_RETRY_ATTEMPTS: ${{ env.SHEETS_RETRY_ATTEMPTS }}
           RUN_ID: ${{ inputs.run_id }}
         run: |
           set -euo pipefail
