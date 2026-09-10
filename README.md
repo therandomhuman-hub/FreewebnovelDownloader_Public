@@ -33,11 +33,15 @@ Completed-status pipeline
 
 The crawler canonicalizes `freewebnovel.com` and `www.freewebnovel.com`, removes fragments/query variants, rejects external/non-page links, follows pagination and genre links, and deduplicates novel URLs. The initial catalog is retained as a seed; successful discovery expands it automatically.
 
-## Discovery workflow
+## Recursive discovery
 
-`.github/workflows/webnovel-discovery.yml` runs every 6 hours and starts from the homepage plus latest-novel and latest-release roots. It recursively follows every reachable same-site HTML link and extracts all `/novel/...` URLs.
+The primary production workflow is `.github/workflows/webnovel-discovery-primary.yml`. It runs every 6 hours shortly after the legacy discovery wrapper and starts from the homepage plus latest-novel and latest-release roots. It recursively follows every reachable same-site HTML link and extracts all `/novel/...` URLs.
 
-A discovery result is committed back to the private engine only when the crawl completes with zero fetch errors. This prevents a partial/failed crawl from replacing a good catalog.
+The crawler checkpoints its frontier, visited URLs, discovered novel URLs, and unresolved errors to a private Google Drive application-data file. This lets a crawl resume across GitHub Actions job boundaries instead of restarting from page 1 when a full-site crawl takes longer than one 330-minute job. It also revisits the live catalog roots on every run so newly added novels are detected.
+
+The crawler requires a complete, zero-error crawl before replacing the master catalog. A partial/error crawl never replaces a known-good catalog.
+
+`.github/workflows/webnovel-discovery.yml` is retained as a compatibility wrapper and runs the crawler in legacy/no-op mode; the primary workflow is the authoritative discovery scheduler.
 
 ## Downloader flow
 
