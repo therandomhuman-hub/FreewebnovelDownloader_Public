@@ -1,0 +1,106 @@
+name: WebNovel Recursive Discovery
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0,6,12,18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webnovel-discovery
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  DISCOVERY_WORKERS: "8"
+  DISCOVERY_REQUEST_TIMEOUT: "30"
+  DISCOVERY_DELAY_SECONDS: "0.15"
+  NOVEL_SOURCE_FILE: "data/scraped_novels.json"
+  DISCOVERY_OUTPUT_FILE: "data/discovered_novels.json"
+  DISCOVERY_REPORT_FILE: "data/discovery_report.json"
+  DISCOVERY_ROOTS: "https://freewebnovel.com/home,https://freewebnovel.com/sort/latest-novel/,https://freewebnovel.com/sort/latest-release/"
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout private engine
+        uses: actions/checkout@v6
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Validate crawler
+        working-directory: private-engine
+        run: python discovery_crawler.py --self-test
+
+      - name: Recursively discover FreeWebNovel
+        working-directory: private-engine
+        env:
+          NOVEL_SOURCE_FILE: ${{ env.NOVEL_SOURCE_FILE }}
+          DISCOVERY_OUTPUT_FILE: ${{ env.DISCOVERY_OUTPUT_FILE }}
+          DISCOVERY_REPORT_FILE: ${{ env.DISCOVERY_REPORT_FILE }}
+          DISCOVERY_ROOTS: ${{ env.DISCOVERY_ROOTS }}
+          DISCOVERY_WORKERS: ${{ env.DISCOVERY_WORKERS }}
+          DISCOVERY_REQUEST_TIMEOUT: ${{ env.DISCOVERY_REQUEST_TIMEOUT }}
+          DISCOVERY_DELAY_SECONDS: ${{ env.DISCOVERY_DELAY_SECONDS }}
+        run: python discovery_crawler.py
+
+      - name: Validate discovery output
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          test -s data/discovered_novels.json
+          jq empty data/discovered_novels.json
+          jq -e 'type == "array" and length > 0' data/discovered_novels.json >/dev/null
+          jq -e 'all(.[]; type == "string" and startswith("https://freewebnovel.com/novel/"))' data/discovered_novels.json >/dev/null
+          jq -e 'length == (unique | length)' data/discovered_novels.json >/dev/null
+          jq . data/discovery_report.json
+
+      - name: Replace seed catalog with discovered catalog
+        working-directory: private-engine
+        run: cp data/discovered_novels.json data/scraped_novels.json
+
+      - name: Commit expanded catalog to private engine
+        working-directory: private-engine
+        env:
+          DISCOVERY_REPORT: data/discovery_report.json
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/scraped_novels.json
+          if git diff --cached --quiet; then
+            echo "No catalog change"
+            exit 0
+          fi
+          count=$(jq 'length' data/scraped_novels.json)
+          new=$(jq -r '.new_novel_urls' "$DISCOVERY_REPORT")
+          git commit -m "Update recursive FreeWebNovel catalog: ${count} novels (${new} new)"
+          git push origin HEAD:main
+
+      - name: Upload discovery report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: webnovel-discovery-report
+          path: |
+            private-engine/data/discovery_report.json
+            private-engine/data/discovered_novels.json
+          if-no-files-found: ignore
+          retention-days: 7
