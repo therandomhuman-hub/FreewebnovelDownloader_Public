@@ -59,7 +59,7 @@ jobs:
             echo "$bad"
             exit 1
           fi
-      - name: Verify required production files exist
+      - name: Verify production workflow set
         working-directory: public-repo
         run: |
           set -euo pipefail
@@ -68,16 +68,27 @@ jobs:
             .github/workflows/webnovel-discovery-primary.yml \
             .github/workflows/monthly-ongoing-recheck.yml \
             .github/workflows/webnovel-tracker-reconcile.yml \
-            .github/workflows/webnovel-tracker-recovery.yml; do
+            .github/workflows/webnovel-tracker-recovery.yml \
+            .github/workflows/production-audit.yml \
+            .github/workflows/deploy-pages.yml; do
             test -s "$file"
           done
+      - name: Verify required private runtime files
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
           for file in \
+            ../private-engine/novel_automator.py \
+            ../private-engine/community_library_worker.py \
+            ../private-engine/community_library_entrypoint.py \
+            ../private-engine/monthly_ongoing_recheck.py \
+            ../private-engine/monthly_community_entrypoint.py \
+            ../private-engine/drive_storage.py \
+            ../private-engine/sheet_aggregator.py \
             ../private-engine/discovery_crawler.py \
             ../private-engine/discovery_state_storage.py \
-            ../private-engine/drive_source_metadata.py \
-            ../private-engine/community_library_entrypoint.py \
-            ../private-engine/monthly_community_entrypoint.py \
-            ../private-engine/sheet_aggregator.py \
+            ../private-engine/health_check.py \
+            ../private-engine/self_check.py \
             ../private-engine/tests/test_core.py; do
             test -s "$file"
           done
@@ -108,7 +119,7 @@ jobs:
           grep -q 'process_failed' .github/workflows/webnovel.yml
           grep -q 'Do not reconcile or advance the production scheduler' .github/workflows/webnovel.yml
           grep -q 'Advance scheduler state only after every worker succeeded' .github/workflows/webnovel.yml
-      - name: Verify tracker reconciliation uses exact historical engine revision
+      - name: Verify historical reconciliation uses exact engine revision
         working-directory: public-repo
         run: |
           set -euo pipefail
