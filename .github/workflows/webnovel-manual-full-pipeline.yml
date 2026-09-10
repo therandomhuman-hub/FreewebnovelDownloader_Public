@@ -1,0 +1,470 @@
+name: WebNovel Manual Full Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_id:
+        description: "Worker that performs the real one-novel E2E run"
+        required: false
+        default: "0"
+        type: choice
+        options: ["0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19"]
+      test_url:
+        description: "Completed freewebnovel.com/novel/... URL used for the real E2E worker"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  WORKFLOW_COUNT: "20"
+  BATCH_SIZE: "5"
+  BATCHES_PER_RUN: "2"
+  GOOGLE_COMPLETED_SHEET: "Sheet1"
+  GOOGLE_ONGOING_SHEET: "Sheet2"
+  COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
+  COMMUNITY_LIBRARY_POLL_SECONDS: "300"
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "18000"
+  COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
+
+concurrency:
+  group: webnovel-manual-full-pipeline
+  cancel-in-progress: false
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      engine_sha: ${{ steps.engine.outputs.commit }}
+    steps:
+      - name: Checkout tested private engine
+        id: engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python sources
+        working-directory: private-engine
+        run: python -m py_compile *.py tests/*.py
+      - name: Run deterministic tests
+        working-directory: private-engine
+        run: python -m unittest discover -s tests -v
+      - name: Validate live integrations read-only
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_COMPLETED_SHEET: Sheet1
+          GOOGLE_ONGOING_SHEET: Sheet2
+        run: |
+          set -euo pipefail
+          python self_check.py
+          python health_check.py
+
+  coordinator:
+    needs: healthcheck
+    runs-on: ubuntu-latest
+    outputs:
+      run_index: ${{ steps.state.outputs.run_index }}
+      engine_sha: ${{ needs.healthcheck.outputs.engine_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Capture scheduler state without modifying it
+        id: state
+        run: |
+          set -euo pipefail
+          test -s state/scheduler_state.json
+          run_index=$(jq -e '.run_index | numbers' state/scheduler_state.json)
+          test "$run_index" -ge 0
+          sha256sum state/scheduler_state.json | tee scheduler-state-before.sha256
+          echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
+      - name: Write manual-test run manifest
+        env:
+          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
+          RUN_INDEX: ${{ steps.state.outputs.run_index }}
+          PUBLIC_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg engine_sha "$ENGINE_SHA" \
+            --arg public_sha "$PUBLIC_SHA" \
+            --argjson run_index "$RUN_INDEX" \
+            --argjson workflow_run_id "$RUN_ID" \
+            --argjson workflow_run_number "$RUN_NUMBER" \
+            --argjson worker_count "$WORKFLOW_COUNT" \
+            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schema_version:1,workflow:"WebNovel Manual Full Pipeline",workflow_run_id:$workflow_run_id,workflow_run_number:$workflow_run_number,run_index:$run_index,engine_sha:$engine_sha,public_sha:$public_sha,worker_count:$worker_count,batch_size:0,batches_per_run:0,created_at:$created_at,manual_test:true}' \
+            > run-manifest.json
+          jq empty run-manifest.json
+          sha256sum run-manifest.json | tee run-manifest.sha256
+      - name: Upload manual-test manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-manual-run-manifest
+          path: |
+            run-manifest.json
+            run-manifest.sha256
+            scheduler-state-before.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  worker:
+    needs: coordinator
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        worker: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - name: Checkout tested private engine revision
+        if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ needs.coordinator.outputs.engine_sha }}
+          path: private-engine
+          persist-credentials: false
+      - name: Set up Python
+        if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+      - name: Install dependencies
+        if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+      - name: Prepare real E2E source
+        if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
+        working-directory: private-engine
+        env:
+          TEST_URL: ${{ inputs.test_url }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from novel_automator import canonical_url
+          url = canonical_url(os.environ["TEST_URL"].strip())
+          if not url:
+              raise SystemExit("test_url must be a valid HTTPS freewebnovel.com/novel/... URL without query/fragment")
+          with open("data/e2e_test_source.json", "w", encoding="utf-8") as fh:
+              json.dump([{"novel_url": url}], fh, indent=2)
+          print(f"E2E_TEST_SOURCE_OK url={url}")
+          PY
+      - name: Run real Community Library worker
+        if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
+        continue-on-error: true
+        working-directory: private-engine
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          NOVEL_SOURCE_FILE: data/e2e_test_source.json
+          WORKFLOW_ID: ${{ matrix.worker }}
+          WORKFLOW_COUNT: ${{ env.WORKFLOW_COUNT }}
+          BATCH_SIZE: "1"
+          BATCHES_PER_RUN: "1"
+          METADATA_WORKERS: "1"
+          RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          DRY_RUN: "false"
+          COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
+          COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
+          COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
+          COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
+        run: python community_library_entrypoint.py
+      - name: Validate real worker result
+        if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
+        continue-on-error: true
+        working-directory: private-engine
+        env:
+          EXPECTED_WORKER: ${{ matrix.worker }}
+          EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+        run: |
+          set -euo pipefail
+          test -s worker_result.json
+          jq empty worker_result.json
+          jq -e '.rows | arrays' worker_result.json >/dev/null
+          test "$(jq -e '.workflow_id | numbers' worker_result.json)" -eq "$EXPECTED_WORKER"
+          test "$(jq -e '.run_index | numbers' worker_result.json)" -eq "$EXPECTED_RUN_INDEX"
+          test "$(jq -e '.workflow_count | numbers' worker_result.json)" -eq "$WORKFLOW_COUNT"
+      - name: Write real worker marker
+        if: ${{ always() && matrix.worker == fromJSON(inputs.worker_id) }}
+        working-directory: private-engine
+        env:
+          WORKER_ID: ${{ matrix.worker }}
+          RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+        run: |
+          set -euo pipefail
+          if test -s worker_result.json \
+            && jq empty worker_result.json >/dev/null 2>&1 \
+            && jq -e --argjson worker "$WORKER_ID" --argjson run "$RUN_INDEX" --argjson total "$WORKFLOW_COUNT" \
+              '.workflow_id == $worker and .run_index == $run and .workflow_count == $total and (.rows | arrays)' \
+              worker_result.json >/dev/null; then
+            failed=$(jq -r '.failed // 0' worker_result.json)
+            status=completed
+            result_sha256=$(sha256sum worker_result.json | awk '{print $1}')
+          else
+            failed=-1
+            status=process_failed
+            result_sha256=""
+          fi
+          jq -n \
+            --argjson worker "$WORKER_ID" \
+            --argjson run "$RUN_INDEX" \
+            --arg status "$status" \
+            --argjson failed "$failed" \
+            --arg engine_sha "$ENGINE_SHA" \
+            --arg result_sha256 "$result_sha256" \
+            '{schema_version:1,worker_id:$worker,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
+            > worker_execution_marker.json
+          jq empty worker_execution_marker.json
+      - name: Write synthetic worker result
+        if: ${{ matrix.worker != fromJSON(inputs.worker_id) }}
+        run: |
+          set -euo pipefail
+          mkdir -p private-engine
+          jq -n \
+            --argjson worker '${{ matrix.worker }}' \
+            --argjson run '${{ needs.coordinator.outputs.run_index }}' \
+            --argjson total "$WORKFLOW_COUNT" \
+            '{schema_version:1,workflow_id:$worker,workflow_count:$total,run_index:$run,rows:[],failed:0}' \
+            > private-engine/worker_result.json
+          sha256=$(sha256sum private-engine/worker_result.json | awk '{print $1}')
+          jq -n \
+            --argjson worker '${{ matrix.worker }}' \
+            --argjson run '${{ needs.coordinator.outputs.run_index }}' \
+            --arg status completed \
+            --arg engine_sha '${{ needs.coordinator.outputs.engine_sha }}' \
+            --arg result_sha256 "$sha256" \
+            '{schema_version:1,worker_id:$worker,run_index:$run,status:$status,failed:0,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
+            > private-engine/worker_execution_marker.json
+      - name: Upload worker result bundle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-manual-worker-${{ matrix.worker }}
+          path: |
+            private-engine/worker_result.json
+            private-engine/worker_execution_marker.json
+          if-no-files-found: error
+          retention-days: 30
+
+  tracker:
+    needs: [coordinator, worker]
+    if: ${{ always() && needs.coordinator.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout tested private engine revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ needs.coordinator.outputs.engine_sha }}
+          path: private-engine
+          persist-credentials: false
+      - name: Checkout scheduler state read-only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: scheduler-state
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Capture scheduler state before tracker
+        run: sha256sum scheduler-state/state/scheduler_state.json | tee scheduler-state-before.sha256
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+      - name: Download manual worker bundles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: webnovel-manual-worker-*
+          path: results
+          merge-multiple: false
+      - name: Validate complete worker set and provenance
+        id: result_check
+        env:
+          EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          EXPECTED_ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t markers < <(find results -type f -name worker_execution_marker.json | sort)
+          test "${#markers[@]}" -eq "$WORKFLOW_COUNT"
+          declare -A seen=()
+          for marker in "${markers[@]}"; do
+            jq empty "$marker"
+            rid=$(jq -e '.worker_id | numbers' "$marker")
+            run=$(jq -e '.run_index | numbers' "$marker")
+            engine=$(jq -e '.engine_sha | strings' "$marker")
+            status=$(jq -e '.status | strings' "$marker")
+            failed=$(jq -e '.failed | numbers' "$marker")
+            result_sha=$(jq -r '.result_sha256 // ""' "$marker")
+            test "$run" -eq "$EXPECTED_RUN_INDEX"
+            test "$engine" = "$EXPECTED_ENGINE_SHA"
+            test "$rid" -ge 0
+            test "$rid" -lt "$WORKFLOW_COUNT"
+            [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate worker marker: $rid"; exit 1; }
+            seen[$rid]=1
+            result_file=$(dirname "$marker")/worker_result.json
+            test -s "$result_file"
+            test "$result_sha" = "$(sha256sum "$result_file" | awk '{print $1}')"
+            jq empty "$result_file"
+            jq -e '.rows | arrays' "$result_file" >/dev/null
+            if [[ "$status" == "completed" ]]; then
+              test "$failed" -ge 0
+            elif [[ "$status" == "process_failed" ]]; then
+              test "$failed" -eq -1
+            else
+              echo "Unknown worker status: $status"
+              exit 1
+            fi
+          done
+          for expected in $(seq 0 $((WORKFLOW_COUNT - 1))); do
+            [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker marker: $expected"; exit 1; }
+          done
+          process_failed_count=$(jq -s '[.[] | select(.status == "process_failed")] | length' results/*/worker_execution_marker.json)
+          test "$process_failed_count" -eq 0
+          echo "complete=true" >> "$GITHUB_OUTPUT"
+      - name: Simulate tracker reconciliation without touching production Sheets
+        if: ${{ steps.result_check.outputs.complete == 'true' }}
+        working-directory: private-engine
+        env:
+          GOOGLE_SHEET_ID: manual-test-placeholder
+          GOOGLE_COMPLETED_SHEET: Sheet1
+          GOOGLE_ONGOING_SHEET: Sheet2
+          RUN_ID: ${{ github.run_id }}
+          ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sheet_aggregator
+
+          class Request:
+              def __init__(self, result=None, action=None):
+                  self.result = result
+                  self.action = action
+              def execute(self):
+                  if self.action:
+                      self.action()
+                  return self.result or {}
+
+          class Values:
+              def __init__(self, api):
+                  self.api = api
+              def get(self, spreadsheetId, range):
+                  name = range.split("!", 1)[0]
+                  return Request({"values": self.api.tabs.get(name, [])})
+              def clear(self, spreadsheetId, range, body):
+                  name = range.split("!", 1)[0]
+                  def action():
+                      self.api.tabs[name] = []
+                  return Request(action=action)
+              def update(self, spreadsheetId, range, valueInputOption, body):
+                  name, cell_range = range.split("!", 1)
+                  def action():
+                      rows = self.api.tabs.setdefault(name, [])
+                      values = body["values"]
+                      if cell_range == "A1:O1":
+                          self.api.tabs[name] = values[:]
+                          return
+                      start = int(cell_range.split(":", 1)[0][1:]) - 1
+                      while len(rows) < start:
+                          rows.append([])
+                      for offset, row in enumerate(values):
+                          index = start + offset
+                          while len(rows) <= index:
+                              rows.append([])
+                          rows[index] = row
+                  return Request(action=action)
+
+          class Spreadsheets:
+              def __init__(self, api):
+                  self.api = api
+                  self._values = Values(api)
+              def get(self, spreadsheetId, fields=None):
+                  sheets = []
+                  for name, rows in self.api.tabs.items():
+                      sheets.append({"properties": {"sheetId": self.api.ids[name], "title": name, "gridProperties": {"rowCount": max(1, len(rows) + 10), "columnCount": 15}}})
+                  return Request({"sheets": sheets})
+              def values(self):
+                  return self._values
+              def batchUpdate(self, spreadsheetId, body):
+                  return Request({})
+
+          class FakeAPI:
+              def __init__(self):
+                  self.ids = {"Sheet1": 1, "Sheet2": 2}
+                  self.tabs = {
+                      "Sheet1": [sheet_aggregator.HEADER],
+                      "Sheet2": [sheet_aggregator.HEADER],
+                  }
+              def spreadsheets(self):
+                  return Spreadsheets(self)
+
+          fake = FakeAPI()
+          sheet_aggregator.service = lambda: fake
+          root = os.environ.get("RESULTS_ROOT", "../results")
+          sheet_aggregator.main(root)
+          summary = json.loads(Path("tracker_summary.json").read_text(encoding="utf-8"))
+          assert summary["incoming_rows"] >= 1, summary
+          assert summary["total_tracked"] == summary["completed_sheet_rows"] + summary["ongoing_sheet_rows"], summary
+          print(json.dumps(summary, indent=2))
+          print("MANUAL_TRACKER_RECONCILIATION_SIMULATION_OK")
+          PY
+      - name: Verify scheduler state was not modified
+        run: |
+          set -euo pipefail
+          before=$(cut -d' ' -f1 scheduler-state-before.sha256)
+          after=$(sha256sum scheduler-state/state/scheduler_state.json | cut -d' ' -f1)
+          test "$before" = "$after"
+          git -C scheduler-state status --short
+          test -z "$(git -C scheduler-state status --porcelain)"
+          echo "SCHEDULER_STATE_UNCHANGED=true"
+      - name: Upload tracker simulation summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-manual-tracker-summary
+          path: private-engine/tracker_summary.json
+          if-no-files-found: ignore
+          retention-days: 30
