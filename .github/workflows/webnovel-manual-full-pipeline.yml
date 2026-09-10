@@ -222,6 +222,7 @@ jobs:
           WORKER_ID: ${{ matrix.worker }}
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+          WORKFLOW_COUNT: ${{ env.WORKFLOW_COUNT }}
         run: |
           set -euo pipefail
           if test -s worker_result.json \
@@ -267,6 +268,21 @@ jobs:
             --arg result_sha256 "$sha256" \
             '{schema_version:1,worker_id:$worker,run_index:$run,status:$status,failed:0,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
             > private-engine/worker_execution_marker.json
+      - name: Validate worker bundle before upload
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          test -s private-engine/worker_result.json
+          test -s private-engine/worker_execution_marker.json
+          jq empty private-engine/worker_result.json
+          jq empty private-engine/worker_execution_marker.json
+          test "$(jq -e '.workflow_id | numbers' private-engine/worker_result.json)" -eq '${{ matrix.worker }}'
+          test "$(jq -e '.run_index | numbers' private-engine/worker_result.json)" -eq '${{ needs.coordinator.outputs.run_index }}'
+          test "$(jq -e '.workflow_count | numbers' private-engine/worker_result.json)" -eq "$WORKFLOW_COUNT"
+          test "$(jq -e '.worker_id | numbers' private-engine/worker_execution_marker.json)" -eq '${{ matrix.worker }}'
+          test "$(jq -e '.run_index | numbers' private-engine/worker_execution_marker.json)" -eq '${{ needs.coordinator.outputs.run_index }}'
+          test "$(jq -e '.engine_sha | strings' private-engine/worker_execution_marker.json)" = '${{ needs.coordinator.outputs.engine_sha }}'
+          test "$(jq -e '.result_sha256 | strings' private-engine/worker_execution_marker.json)" = "$(sha256sum private-engine/worker_result.json | awk '{print $1}')"
       - name: Upload worker result bundle
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -286,6 +302,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      WORKFLOW_COUNT: "20"
     steps:
       - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -303,8 +321,7 @@ jobs:
           persist-credentials: false
       - name: Capture scheduler state before tracker
         run: sha256sum scheduler-state/state/scheduler_state.json | tee scheduler-state-before.sha256
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -371,6 +388,7 @@ jobs:
           GOOGLE_ONGOING_SHEET: Sheet2
           RUN_ID: ${{ github.run_id }}
           ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+          RESULTS_ROOT: ../results
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -443,7 +461,7 @@ jobs:
 
           fake = FakeAPI()
           sheet_aggregator.service = lambda: fake
-          root = os.environ.get("RESULTS_ROOT", "../results")
+          root = os.environ["RESULTS_ROOT"]
           sheet_aggregator.main(root)
           summary = json.loads(Path("tracker_summary.json").read_text(encoding="utf-8"))
           assert summary["incoming_rows"] >= 1, summary
