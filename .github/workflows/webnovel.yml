@@ -46,8 +46,12 @@ jobs:
   healthcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      engine_sha: ${{ steps.engine.outputs.commit }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Checkout tested private engine
+        id: engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -88,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run_index: ${{ steps.state.outputs.run_index }}
-      engine_sha: ${{ steps.engine_sha.outputs.engine_sha }}
+      engine_sha: ${{ needs.healthcheck.outputs.engine_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -101,18 +105,7 @@ jobs:
           run_index=$(jq -e '.run_index | numbers' state/scheduler_state.json)
           test "$run_index" -ge 0
           echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
-      - name: Resolve private engine revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: therandomhuman-hub/FreewebnovelDownloader_Private
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: private-engine
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Export private engine SHA
-        id: engine_sha
-        working-directory: private-engine
-        run: echo "engine_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Using tested private-engine revision: ${{ needs.healthcheck.outputs.engine_sha }}"
 
   worker:
     needs: coordinator
@@ -124,7 +117,7 @@ jobs:
       matrix:
         worker: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
     steps:
-      - name: Checkout private engine
+      - name: Checkout tested private engine revision
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -255,7 +248,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout private engine
+      - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
