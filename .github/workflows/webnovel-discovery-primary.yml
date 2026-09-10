@@ -39,6 +39,20 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: true
+      - name: Verify required discovery secret configuration
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          for name in PRIVATE_REPO_TOKEN GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET GOOGLE_DRIVE_REFRESH_TOKEN GOOGLE_DRIVE_FOLDER_ID; do
+            value="${!name:-}"
+            test -n "$value" || { echo "Missing required secret: $name"; exit 1; }
+          done
+          echo "Required discovery secrets are present."
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
