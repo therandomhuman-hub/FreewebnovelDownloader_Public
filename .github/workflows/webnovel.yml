@@ -234,9 +234,14 @@ jobs:
           WORKER_ID: ${{ matrix.worker }}
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+          WORKFLOW_COUNT: ${{ env.WORKFLOW_COUNT }}
         run: |
           set -euo pipefail
-          if test -s worker_result.json && jq empty worker_result.json >/dev/null 2>&1; then
+          if test -s worker_result.json \
+            && jq empty worker_result.json >/dev/null 2>&1 \
+            && jq -e --argjson worker "$WORKER_ID" --argjson run "$RUN_INDEX" --argjson total "$WORKFLOW_COUNT" \
+              '.workflow_id == $worker and .run_index == $run and .workflow_count == $total and (.rows | arrays)' \
+              worker_result.json >/dev/null; then
             failed=$(jq -r '.failed // 0' worker_result.json)
             status=completed
             result_sha256=$(sha256sum worker_result.json | awk '{print $1}')
