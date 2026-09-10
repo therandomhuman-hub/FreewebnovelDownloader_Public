@@ -35,8 +35,6 @@ env:
   NOVEL_SOURCE_FILE: "data/scraped_novels.json"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
   COMMUNITY_LIBRARY_POLL_SECONDS: "300"
-  # Keep watching until the novel appears. The worker's 330-minute GitHub job
-  # timeout is the external safety limit; there is no 20-minute library timeout.
   COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "2147483647"
   COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
 
@@ -186,18 +184,35 @@ jobs:
           end=$(jq -e '.assignment.end | numbers' worker_result.json)
           source_total=$(jq -e '.source_total | numbers' worker_result.json)
           failed=$(jq -e '.failed // 0 | numbers' worker_result.json)
-          test "$rid" -eq "$EXPECTED_WORKER"; test "$run" -eq "$EXPECTED_RUN_INDEX"; test "$total" -eq 20; test "$failed" -eq 0
+          test "$rid" -eq "$EXPECTED_WORKER"
+          test "$run" -eq "$EXPECTED_RUN_INDEX"
+          test "$total" -eq "${WORKFLOW_COUNT}"
+          test "$failed" -eq 0
           if [[ -n "$E2E_TEST_URL" ]]; then
-            test "$EXPECTED_WORKER" -eq 0; test "$source_total" -eq 1; test "$selected" -eq 1; test "$start" -eq 0; test "$end" -eq 1
+            test "$EXPECTED_WORKER" -eq 0
+            test "$source_total" -eq 1
+            test "$selected" -eq 1
+            test "$start" -eq 0
+            test "$end" -eq 1
             jq -e '.rows | length == 1' worker_result.json >/dev/null
             jq -e '.rows[0].status == "Completed"' worker_result.json >/dev/null
             jq -e '.rows[0].download_status == "Downloaded to Google Drive" or .rows[0].download_status == "Already in Google Drive"' worker_result.json >/dev/null
             jq -e '.rows[0].drive_file_id != "" and .rows[0].drive_url != ""' worker_result.json >/dev/null
           else
-            test "$selected" -le 10; test "$selected" -eq $((end-start)); test "$start" -ge 0; test "$end" -le "$source_total"
-            block=200; cycle_count=$(( (source_total + block - 1) / block )); (( cycle_count < 1 )) && cycle_count=1
-            cycle_position=$((EXPECTED_RUN_INDEX % cycle_count)); expected_start=$((cycle_position * block + EXPECTED_WORKER * 10)); test "$start" -eq "$expected_start"
-            expected_end=$((expected_start + 10)); (( expected_end > source_total )) && expected_end="$source_total"; test "$end" -eq "$expected_end"
+            per_worker=$((BATCH_SIZE * BATCHES_PER_RUN))
+            block_size=$((WORKFLOW_COUNT * per_worker))
+            test "$selected" -le "$per_worker"
+            test "$selected" -eq $((end-start))
+            test "$start" -ge 0
+            test "$end" -le "$source_total"
+            cycle_count=$(( (source_total + block_size - 1) / block_size ))
+            (( cycle_count < 1 )) && cycle_count=1
+            cycle_position=$((EXPECTED_RUN_INDEX % cycle_count))
+            expected_start=$((cycle_position * block_size + EXPECTED_WORKER * per_worker))
+            test "$start" -eq "$expected_start"
+            expected_end=$((expected_start + per_worker))
+            (( expected_end > source_total )) && expected_end="$source_total"
+            test "$end" -eq "$expected_end"
           fi
       - name: Upload worker result
         if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
@@ -261,7 +276,7 @@ jobs:
           done
           complete=false
           if [[ "$EXPECTED_WORKERS" = "1" ]]; then [[ "$invalid" -eq 0 && -n "${seen[$EXPECTED_MANUAL_WORKER]+x}" ]] && complete=true
-          elif [[ "$invalid" -eq 0 && "$valid" -eq 20 ]]; then complete=true; for expected in $(seq 0 19); do [[ -n "${seen[$expected]+x}" ]] || { complete=false; break; }; done; fi
+          elif [[ "$invalid" -eq 0 && "$valid" -eq "$WORKFLOW_COUNT" ]]; then complete=true; for expected in $(seq 0 $((WORKFLOW_COUNT - 1))); do [[ -n "${seen[$expected]+x}" ]] || { complete=false; break; }; done; fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"; [[ "$complete" = true ]]
       - name: Update split Google Sheet
         working-directory: private-engine
