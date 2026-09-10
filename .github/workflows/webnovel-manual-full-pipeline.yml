@@ -222,6 +222,7 @@ jobs:
           WORKER_ID: ${{ matrix.worker }}
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
           ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+          WORKFLOW_COUNT: ${{ env.WORKFLOW_COUNT }}
         run: |
           set -euo pipefail
           if test -s worker_result.json \
@@ -286,6 +287,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      WORKFLOW_COUNT: "20"
     steps:
       - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -303,8 +306,7 @@ jobs:
           persist-credentials: false
       - name: Capture scheduler state before tracker
         run: sha256sum scheduler-state/state/scheduler_state.json | tee scheduler-state-before.sha256
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -371,6 +373,7 @@ jobs:
           GOOGLE_ONGOING_SHEET: Sheet2
           RUN_ID: ${{ github.run_id }}
           ENGINE_SHA: ${{ needs.coordinator.outputs.engine_sha }}
+          RESULTS_ROOT: ../results
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -443,7 +446,7 @@ jobs:
 
           fake = FakeAPI()
           sheet_aggregator.service = lambda: fake
-          root = os.environ.get("RESULTS_ROOT", "../results")
+          root = os.environ["RESULTS_ROOT"]
           sheet_aggregator.main(root)
           summary = json.loads(Path("tracker_summary.json").read_text(encoding="utf-8"))
           assert summary["incoming_rows"] >= 1, summary
