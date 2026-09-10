@@ -65,7 +65,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify required production workflows exist
+      - name: Verify required production files exist
         working-directory: public-repo
         run: |
           set -euo pipefail
@@ -76,12 +76,19 @@ jobs:
             .github/workflows/webnovel-tracker-recovery.yml; do
             test -s "$file"
           done
+          for file in \
+            ../private-engine/discovery_crawler.py \
+            ../private-engine/drive_source_metadata.py \
+            ../private-engine/community_library_entrypoint.py \
+            ../private-engine/monthly_community_entrypoint.py \
+            ../private-engine/tests/test_core.py; do
+            test -s "$file"
+          done
 
       - name: Verify recursive discovery is enabled
         working-directory: public-repo
         run: |
           set -euo pipefail
-          grep -q 'webnovel-discovery.yml' <(find .github/workflows -maxdepth 1 -type f -printf '%f\n') || true
           grep -q 'DISCOVERY_ROOTS' .github/workflows/webnovel-discovery.yml
           grep -q 'discovery_crawler.py' .github/workflows/webnovel-discovery.yml
           grep -q 'same_site_recursive' ../private-engine/discovery_crawler.py
