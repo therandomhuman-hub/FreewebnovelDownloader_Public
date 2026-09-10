@@ -321,8 +321,8 @@ jobs:
             jq empty "$marker"
             rid=$(jq -e '.worker_id | numbers' "$marker")
             run=$(jq -e '.run_index | numbers' "$marker")
-            engine=$(jq -e '.engine_sha | strings' "$marker")
-            status=$(jq -e '.status | strings' "$marker")
+            engine=$(jq -er '.engine_sha | strings' "$marker")
+            status=$(jq -er '.status | strings' "$marker")
             failed=$(jq -e '.failed | numbers' "$marker")
             result_sha=$(jq -r '.result_sha256 // ""' "$marker")
             test "$run" -eq "$EXPECTED_RUN_INDEX"

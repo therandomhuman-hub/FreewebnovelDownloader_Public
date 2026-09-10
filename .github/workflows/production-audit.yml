@@ -219,3 +219,11 @@ jobs:
       - name: Verify no obsolete retry wrapper remains
         working-directory: private-engine
         run: test ! -e run_worker_retry.py
+      - name: Verify jq string extraction is raw
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          ! grep -q 'engine=$(jq -e '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          ! grep -q 'status=$(jq -e '\''.status | strings'\'' "$marker")' .github/workflows/webnovel.yml
