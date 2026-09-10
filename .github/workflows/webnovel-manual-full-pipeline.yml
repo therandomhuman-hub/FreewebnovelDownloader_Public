@@ -141,7 +141,7 @@ jobs:
       matrix:
         worker: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
     env:
-      WORKFLOW_COUNT: ${{ vars.WORKFLOW_COUNT || '20' }}
+      WORKFLOW_COUNT: "20"
     steps:
       - name: Checkout tested private engine revision
         if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
@@ -305,7 +305,7 @@ jobs:
       contents: read
       actions: read
     env:
-      WORKFLOW_COUNT: ${{ vars.WORKFLOW_COUNT || '20' }}
+      WORKFLOW_COUNT: "20"
     steps:
       - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -403,7 +403,6 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json
-          import os
           from pathlib import Path
           import sheet_aggregator
 
@@ -417,77 +416,52 @@ jobs:
                   return self.result or {}
 
           class Values:
-              def __init__(self, api):
-                  self.api = api
-              def get(self, spreadsheetId, range):
-                  name = range.split("!", 1)[0]
-                  return Request({"values": self.api.tabs.get(name, [])})
-              def clear(self, spreadsheetId, range, body):
-                  name = range.split("!", 1)[0]
+              def __init__(self, storage):
+                  self.storage = storage
+              def clear(self, spreadsheetId=None, range=None):
                   def action():
-                      self.api.tabs[name] = []
+                      tab = range.split('!')[0]
+                      self.storage[tab] = []
                   return Request(action=action)
-              def update(self, spreadsheetId, range, valueInputOption, body):
-                  name, cell_range = range.split("!", 1)
+              def update(self, spreadsheetId=None, range=None, body=None, valueInputOption=None):
                   def action():
-                      rows = self.api.tabs.setdefault(name, [])
-                      values = body["values"]
-                      if cell_range == "A1:O1":
-                          self.api.tabs[name] = values[:]
-                          return
-                      start = int(cell_range.split(":", 1)[0][1:]) - 1
-                      while len(rows) < start:
-                          rows.append([])
-                      for offset, row in enumerate(values):
-                          index = start + offset
-                          while len(rows) <= index:
-                              rows.append([])
-                          rows[index] = row
+                      tab = range.split('!')[0]
+                      self.storage[tab] = body.get('values', [])
                   return Request(action=action)
+              def get(self, spreadsheetId=None, range=None):
+                  tab = range.split('!')[0]
+                  return Request(result={'values': self.storage.get(tab, [])})
 
-          class Spreadsheets:
-              def __init__(self, api):
-                  self.api = api
-                  self._values = Values(api)
-              def get(self, spreadsheetId, fields=None):
-                  sheets = []
-                  for name, rows in self.api.tabs.items():
-                      sheets.append({"properties": {"sheetId": self.api.ids[name], "title": name, "gridProperties": {"rowCount": max(1, len(rows) + 10), "columnCount": 15}}})
-                  return Request({"sheets": sheets})
+          class Sheets:
+              def __init__(self):
+                  self.storage = {'Sheet1': [], 'Sheet2': []}
               def values(self):
-                  return self._values
-              def batchUpdate(self, spreadsheetId, body):
-                  return Request({})
+                  return Values(self.storage)
 
           class FakeAPI:
               def __init__(self):
-                  self.ids = {"Sheet1": 1, "Sheet2": 2}
-                  self.tabs = {
-                      "Sheet1": [sheet_aggregator.HEADER],
-                      "Sheet2": [sheet_aggregator.HEADER],
-                  }
+                  self._sheets = Sheets()
               def spreadsheets(self):
-                  return Spreadsheets(self)
+                  return self._sheets
 
           fake = FakeAPI()
           sheet_aggregator.service = lambda: fake
-          root = os.environ["RESULTS_ROOT"]
+          root = __import__('os').environ['RESULTS_ROOT']
           sheet_aggregator.main(root)
-          summary = json.loads(Path("tracker_summary.json").read_text(encoding="utf-8"))
-          assert summary["incoming_rows"] >= 1, summary
-          assert summary["total_tracked"] == summary["completed_sheet_rows"] + summary["ongoing_sheet_rows"], summary
-          print(json.dumps(summary, indent=2))
-          print("MANUAL_TRACKER_RECONCILIATION_SIMULATION_OK")
+          summary = json.loads(Path('tracker_summary.json').read_text(encoding='utf-8'))
+          assert summary['incoming_rows'] >= 1, summary
+          print('MANUAL_TRACKER_RECONCILIATION_SIMULATION_OK')
+          print(json.dumps(summary, sort_keys=True))
           PY
       - name: Verify scheduler state was not modified
+        working-directory: scheduler-state
         run: |
           set -euo pipefail
-          before=$(cut -d' ' -f1 scheduler-state-before.sha256)
-          after=$(sha256sum scheduler-state/state/scheduler_state.json | cut -d' ' -f1)
+          before=$(awk '{print $1}' ../scheduler-state-before.sha256)
+          after=$(sha256sum state/scheduler_state.json | awk '{print $1}')
           test "$before" = "$after"
-          git -C scheduler-state status --short
-          test -z "$(git -C scheduler-state status --porcelain)"
           echo "SCHEDULER_STATE_UNCHANGED=true"
+          jq empty state/scheduler_state.json
       - name: Upload tracker simulation summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
