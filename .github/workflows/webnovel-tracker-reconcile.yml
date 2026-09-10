@@ -121,6 +121,37 @@ jobs:
           test "$count" -eq 20
           echo "Extracted $count worker results."
 
+      - name: Validate worker provenance and result integrity
+        env:
+          EXPECTED_ENGINE_SHA: ${{ steps.manifest.outputs.engine_sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t markers < <(find extracted -type f -name worker_execution_marker.json | sort)
+          test "${#markers[@]}" -eq 20
+          declare -A seen=()
+          for marker in "${markers[@]}"; do
+            jq empty "$marker"
+            rid=$(jq -e '.worker_id | numbers' "$marker")
+            engine=$(jq -e '.engine_sha | strings' "$marker")
+            status=$(jq -e '.status | strings' "$marker")
+            run=$(jq -e '.run_index | numbers' "$marker")
+            result_sha=$(jq -r '.result_sha256 // ""' "$marker")
+            test "$engine" = "$EXPECTED_ENGINE_SHA"
+            [[ "$status" == "completed" ]] || { echo "Worker $rid has process status $status; reconciliation refused"; exit 1; }
+            [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate worker marker: $rid"; exit 1; }
+            seen[$rid]=1
+            result_file=$(dirname "$marker")/worker_result.json
+            test -s "$result_file"
+            test "$result_sha" = "$(sha256sum "$result_file" | awk '{print $1}')"
+            jq empty "$result_file"
+            jq -e '.rows | arrays' "$result_file" >/dev/null
+            jq -e '.run_index | numbers' "$result_file" >/dev/null
+            test "$(jq -r '.run_index' "$result_file")" -eq "$run"
+          done
+          for expected in $(seq 0 19); do
+            [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker marker: $expected"; exit 1; }
+          done
+
       - name: Checkout exact private engine revision used by the run
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -151,6 +182,7 @@ jobs:
           SHEETS_HTTP_TIMEOUT_SECONDS: ${{ env.SHEETS_HTTP_TIMEOUT_SECONDS }}
           SHEETS_RETRY_ATTEMPTS: ${{ env.SHEETS_RETRY_ATTEMPTS }}
           RUN_ID: ${{ inputs.run_id }}
+          ENGINE_SHA: ${{ steps.manifest.outputs.engine_sha }}
         run: |
           set -euo pipefail
           python sheet_aggregator.py ../extracted
