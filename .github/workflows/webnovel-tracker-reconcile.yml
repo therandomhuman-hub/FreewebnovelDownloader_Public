@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   PYTHON_VERSION: "3.12"
@@ -31,7 +32,7 @@ jobs:
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run_id must be numeric"; exit 1; }
           echo "Reconciling WebNovel Downloader run $RUN_ID"
 
-      - name: Download worker artifacts from run
+      - name: Download run manifest and worker artifacts
         uses: actions/github-script@v7
         env:
           RUN_ID: ${{ inputs.run_id }}
@@ -44,6 +45,10 @@ jobs:
             const run = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
             if (run.data.name !== 'WebNovel Downloader') {
               core.setFailed(`Run ${runId} belongs to workflow '${run.data.name}', not 'WebNovel Downloader'`);
+              return;
+            }
+            if (run.data.status !== 'completed') {
+              core.setFailed(`Run ${runId} is not completed (status=${run.data.status})`);
               return;
             }
             const artifacts = await github.paginate(
@@ -62,6 +67,11 @@ jobs:
                 return;
               }
             }
+            const manifest = artifacts.filter(a => a.name === 'webnovel-run-manifest' && !a.expired);
+            if (manifest.length !== 1) {
+              core.setFailed(`Expected exactly one non-expired webnovel-run-manifest; found ${manifest.length}`);
+              return;
+            }
             fs.mkdirSync('results', { recursive: true });
             for (const artifact of wanted) {
               const response = await github.rest.actions.downloadArtifact({
@@ -70,6 +80,33 @@ jobs:
               fs.writeFileSync(`results/${artifact.name}.zip`, Buffer.from(response.data));
               core.info(`Downloaded ${artifact.name}`);
             }
+            const manifestResponse = await github.rest.actions.downloadArtifact({
+              owner, repo, artifact_id: manifest[0].id, archive_format: 'zip'
+            });
+            fs.mkdirSync('run-manifest', { recursive: true });
+            fs.writeFileSync('run-manifest/run-manifest.zip', Buffer.from(manifestResponse.data));
+
+      - name: Extract and validate run manifest
+        id: manifest
+        env:
+          EXPECTED_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          unzip -q run-manifest/run-manifest.zip -d run-manifest/extracted
+          test -s run-manifest/extracted/run-manifest.json
+          test -s run-manifest/extracted/run-manifest.sha256
+          (cd run-manifest/extracted && sha256sum -c run-manifest.sha256)
+          jq empty run-manifest/extracted/run-manifest.json
+          workflow=$(jq -r '.workflow' run-manifest/extracted/run-manifest.json)
+          run_id=$(jq -r '.workflow_run_id' run-manifest/extracted/run-manifest.json)
+          workers=$(jq -e '.worker_count | numbers' run-manifest/extracted/run-manifest.json)
+          engine_sha=$(jq -r '.engine_sha' run-manifest/extracted/run-manifest.json)
+          [[ "$workflow" == "WebNovel Downloader" ]] || { echo "Invalid manifest workflow: $workflow"; exit 1; }
+          [[ "$run_id" == "$EXPECTED_RUN_ID" ]] || { echo "Manifest run ID $run_id does not match requested $EXPECTED_RUN_ID"; exit 1; }
+          [[ "$workers" -eq 20 ]] || { echo "Manifest worker count $workers is not 20"; exit 1; }
+          [[ "$engine_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Manifest engine SHA is not a full commit SHA"; exit 1; }
+          echo "engine_sha=$engine_sha" >> "$GITHUB_OUTPUT"
+          echo "Validated immutable run manifest for run $run_id using private engine $engine_sha"
 
       - name: Extract worker artifacts
         run: |
@@ -84,11 +121,12 @@ jobs:
           test "$count" -eq 20
           echo "Extracted $count worker results."
 
-      - name: Checkout private engine
+      - name: Checkout exact private engine revision used by the run
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ steps.manifest.outputs.engine_sha }}
           path: private-engine
           persist-credentials: false
 
