@@ -49,6 +49,30 @@ jobs:
           python -m unittest discover -s tests -v
           python self_check.py
           python discovery_crawler.py --self-test
+      - name: Import every production Python entrypoint
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib
+          modules = [
+              "novel_automator",
+              "community_library_worker",
+              "community_library_entrypoint",
+              "monthly_ongoing_recheck",
+              "monthly_community_entrypoint",
+              "drive_storage",
+              "drive_source_metadata",
+              "sheet_aggregator",
+              "discovery_crawler",
+              "discovery_state_storage",
+              "health_check",
+              "self_check",
+          ]
+          for name in modules:
+              importlib.import_module(name)
+              print(f"IMPORT_OK {name}")
+          PY
       - name: Verify every GitHub Action is SHA pinned
         working-directory: public-repo
         run: |
@@ -84,6 +108,7 @@ jobs:
             ../private-engine/monthly_ongoing_recheck.py \
             ../private-engine/monthly_community_entrypoint.py \
             ../private-engine/drive_storage.py \
+            ../private-engine/drive_source_metadata.py \
             ../private-engine/sheet_aggregator.py \
             ../private-engine/discovery_crawler.py \
             ../private-engine/discovery_state_storage.py \
@@ -103,6 +128,7 @@ jobs:
           grep -q 'DISCOVERY_ROOTS' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'discovery_crawler.py' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'same_site_recursive' ../private-engine/discovery_crawler.py
+          ! grep -q 'list(errors.items())\[:1000\]' ../private-engine/discovery_crawler.py
       - name: Verify immutable run provenance
         working-directory: public-repo
         run: |
@@ -133,7 +159,9 @@ jobs:
           set -euo pipefail
           grep -q 'verify_written_tabs' sheet_aggregator.py
           grep -q 'Conflicting duplicate worker rows' sheet_aggregator.py
+          grep -q 'Duplicate URL exists across tracker tabs' sheet_aggregator.py
           grep -q 'AuthorizedHttp' sheet_aggregator.py
+          grep -q 'return download_status in SUCCESS_DOWNLOAD_STATUSES and bool(drive_file_id)' sheet_aggregator.py
       - name: Verify manual tests never advance production scheduler
         working-directory: public-repo
         run: |
