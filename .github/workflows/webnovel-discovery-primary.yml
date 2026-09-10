@@ -53,6 +53,13 @@ jobs:
             test -n "$value" || { echo "Missing required secret: $name"; exit 1; }
           done
           echo "Required discovery secrets are present."
+      - name: Export Google Drive folder ID for all discovery steps
+        env:
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$GOOGLE_DRIVE_FOLDER_ID"
+          echo "GOOGLE_DRIVE_FOLDER_ID=$GOOGLE_DRIVE_FOLDER_ID" >> "$GITHUB_ENV"
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -77,7 +84,7 @@ jobs:
           GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
           GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
           GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ env.GOOGLE_DRIVE_FOLDER_ID }}
           DISCOVERY_STATE_NAME: ${{ env.DISCOVERY_STATE_NAME }}
           NOVEL_SOURCE_FILE: ${{ env.NOVEL_SOURCE_FILE }}
           DISCOVERY_OUTPUT_FILE: ${{ env.DISCOVERY_OUTPUT_FILE }}
@@ -88,7 +95,11 @@ jobs:
           DISCOVERY_DELAY_SECONDS: ${{ env.DISCOVERY_DELAY_SECONDS }}
           DISCOVERY_CHECKPOINT_PAGES: ${{ env.DISCOVERY_CHECKPOINT_PAGES }}
           DISCOVERY_PAGE_RETRIES: ${{ env.DISCOVERY_PAGE_RETRIES }}
-        run: python discovery_crawler.py
+        run: |
+          set -euo pipefail
+          test -n "$GOOGLE_DRIVE_FOLDER_ID"
+          echo "Discovery state folder secret is available."
+          python discovery_crawler.py
       - name: Require a complete, error-free crawl before replacing the catalog
         working-directory: private-engine
         run: |
