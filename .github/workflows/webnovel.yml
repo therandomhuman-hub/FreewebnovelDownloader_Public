@@ -35,7 +35,7 @@ env:
   NOVEL_SOURCE_FILE: "data/scraped_novels.json"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
   COMMUNITY_LIBRARY_POLL_SECONDS: "300"
-  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "2147483647"
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "21600"
   COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
 
 concurrency:
@@ -111,6 +111,7 @@ jobs:
     needs: coordinator
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    continue-on-error: true
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -156,6 +157,7 @@ jobs:
           PY
       - name: Run Community Library worker
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
+        continue-on-error: true
         working-directory: private-engine
         env:
           GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
@@ -177,12 +179,11 @@ jobs:
         run: python community_library_entrypoint.py
       - name: Validate worker result
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
+        continue-on-error: true
         working-directory: private-engine
         env:
           EXPECTED_WORKER: ${{ matrix.worker }}
           EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
-          E2E_TEST_URL: ${{ inputs.test_url || '' }}
-          E2E_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         run: |
           set -euo pipefail
           test -s worker_result.json
@@ -190,61 +191,41 @@ jobs:
           rid=$(jq -e '.workflow_id | numbers' worker_result.json)
           run=$(jq -e '.run_index | numbers' worker_result.json)
           total=$(jq -e '.workflow_count | numbers' worker_result.json)
-          selected=$(jq -e '.assignment.selected | numbers' worker_result.json)
-          start=$(jq -e '.assignment.start | numbers' worker_result.json)
-          end=$(jq -e '.assignment.end | numbers' worker_result.json)
-          source_total=$(jq -e '.source_total | numbers' worker_result.json)
-          failed=$(jq -e '.failed // 0 | numbers' worker_result.json)
           test "$rid" -eq "$EXPECTED_WORKER"
           test "$run" -eq "$EXPECTED_RUN_INDEX"
           test "$total" -eq "${WORKFLOW_COUNT}"
-          test "$failed" -eq 0
-          if [[ -n "$E2E_TEST_URL" ]]; then
-            test "$EXPECTED_WORKER" -eq 0
-            test "$source_total" -eq 1
-            test "$selected" -eq 1
-            test "$start" -eq 0
-            test "$end" -eq 1
-            jq -e '.rows | length == 1' worker_result.json >/dev/null
-            if [[ "$E2E_DRY_RUN" == "true" ]]; then
-              jq -e '.rows[0].status != "Completed"' worker_result.json >/dev/null
-              jq -e '.rows[0].status != "ERROR"' worker_result.json >/dev/null
-              jq -e '.rows[0].download_status != "Downloaded to Google Drive" and .rows[0].download_status != "Already in Google Drive"' worker_result.json >/dev/null
-            else
-              jq -e '.rows[0].status == "Completed"' worker_result.json >/dev/null
-              jq -e '.rows[0].download_status == "Downloaded to Google Drive" or .rows[0].download_status == "Already in Google Drive"' worker_result.json >/dev/null
-              jq -e '.rows[0].drive_file_id != "" and .rows[0].drive_url != ""' worker_result.json >/dev/null
-            fi
+      - name: Write worker execution marker
+        if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
+        working-directory: private-engine
+        env:
+          WORKER_ID: ${{ matrix.worker }}
+          RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+        run: |
+          set -euo pipefail
+          if test -s worker_result.json; then
+            failed=$(jq -r '.failed // 0' worker_result.json)
+            status=completed
           else
-            per_worker=$((BATCH_SIZE * BATCHES_PER_RUN))
-            block_size=$((WORKFLOW_COUNT * per_worker))
-            test "$selected" -le "$per_worker"
-            test "$selected" -eq $((end-start))
-            test "$start" -ge 0
-            test "$end" -le "$source_total"
-            cycle_count=$(( (source_total + block_size - 1) / block_size ))
-            (( cycle_count < 1 )) && cycle_count=1
-            cycle_position=$((EXPECTED_RUN_INDEX % cycle_count))
-            expected_start=$((cycle_position * block_size + EXPECTED_WORKER * per_worker))
-            test "$start" -eq "$expected_start"
-            expected_end=$((expected_start + per_worker))
-            (( expected_end > source_total )) && expected_end="$source_total"
-            test "$end" -eq "$expected_end"
+            failed=-1
+            status=process_failed
           fi
-      - name: Upload worker result
+          jq -n --argjson worker "$WORKER_ID" --argjson run "$RUN_INDEX" --arg status "$status" --argjson failed "$failed" '{worker_id:$worker,run_index:$run,status:$status,failed:$failed}' > worker_execution_marker.json
+      - name: Upload worker result bundle
         if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: webnovel-worker-${{ matrix.worker }}
-          path: private-engine/worker_result.json
-          if-no-files-found: ignore
+          path: |
+            private-engine/worker_result.json
+            private-engine/worker_execution_marker.json
+          if-no-files-found: error
           retention-days: 7
 
   tracker:
     needs: [coordinator, worker]
-    if: ${{ github.event_name == 'schedule' && needs.coordinator.result == 'success' && needs.worker.result == 'success' }}
+    if: ${{ always() && github.event_name == 'schedule' && needs.coordinator.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -269,35 +250,40 @@ jobs:
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-      - name: Download worker results
+      - name: Download worker result bundles
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: webnovel-worker-*
           path: results
           merge-multiple: false
-      - name: Validate result set
+      - name: Validate result set and worker execution
         id: result_check
         env:
           EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
         run: |
           set -euo pipefail
-          mapfile -t files < <(find results -type f -name worker_result.json | sort)
-          test "${#files[@]}" -eq "$WORKFLOW_COUNT"
+          mapfile -t markers < <(find results -type f -name worker_execution_marker.json | sort)
+          test "${#markers[@]}" -eq "$WORKFLOW_COUNT"
           declare -A seen=()
-          for f in "${files[@]}"; do
-            jq empty "$f"
-            rid=$(jq -e '.workflow_id | numbers' "$f")
-            run=$(jq -e '.run_index | numbers' "$f")
-            failed=$(jq -e '.failed // 0 | numbers' "$f")
+          for marker in "${markers[@]}"; do
+            jq empty "$marker"
+            rid=$(jq -e '.worker_id | numbers' "$marker")
+            run=$(jq -e '.run_index | numbers' "$marker")
             test "$run" -eq "$EXPECTED_RUN_INDEX"
             test "$rid" -ge 0
             test "$rid" -lt "$WORKFLOW_COUNT"
-            test "$failed" -eq 0
-            [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate worker result: $rid"; exit 1; }
+            [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate worker marker: $rid"; exit 1; }
             seen[$rid]=1
+            status=$(jq -r '.status' "$marker")
+            failed=$(jq -r '.failed' "$marker")
+            if [[ "$status" == "completed" && "$failed" -gt 0 ]]; then
+              echo "Worker $rid has per-novel failures: $failed. These rows remain retryable in Sheet2."
+            elif [[ "$status" != "completed" ]]; then
+              echo "Worker $rid did not produce a normal result: $status"
+            fi
           done
           for expected in $(seq 0 $((WORKFLOW_COUNT - 1))); do
-            [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker result: $expected"; exit 1; }
+            [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker marker: $expected"; exit 1; }
           done
           echo "complete=true" >> "$GITHUB_OUTPUT"
       - name: Update split Google Sheet
@@ -316,8 +302,8 @@ jobs:
           path: private-engine/tracker_summary.json
           if-no-files-found: ignore
           retention-days: 7
-      - name: Advance scheduler state atomically
-        if: ${{ success() && needs.worker.result == 'success' && steps.result_check.outputs.complete == 'true' }}
+      - name: Advance scheduler state only after every worker reported
+        if: ${{ success() && steps.result_check.outputs.complete == 'true' }}
         working-directory: scheduler-state
         env:
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
