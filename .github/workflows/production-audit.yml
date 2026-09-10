@@ -26,7 +26,7 @@ jobs:
           path: public-repo
           fetch-depth: 1
       - name: Checkout private engine
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ee4b97
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -168,13 +168,17 @@ jobs:
           grep -q 'test "$rid" -eq "$EXPECTED_WORKER"' .github/workflows/webnovel.yml
           grep -q 'test "$run" -eq "$EXPECTED_RUN_INDEX"' .github/workflows/webnovel.yml
           grep -q 'test "$total" -eq "${WORKFLOW_COUNT}"' .github/workflows/webnovel.yml
+          grep -q 'WORKFLOW_COUNT: ${{ env.WORKFLOW_COUNT }}' .github/workflows/webnovel.yml
+          grep -q '.workflow_id == $worker and .run_index == $run and .workflow_count == $total and (.rows | arrays)' .github/workflows/webnovel.yml
       - name: Verify process failures cannot advance scheduler state
         working-directory: public-repo
         run: |
           set -euo pipefail
           grep -q 'process_failed' .github/workflows/webnovel.yml
-          grep -q 'Do not reconcile or advance the production scheduler' .github/workflows/webnovel.yml
+          grep -q 'process_failed_count=' .github/workflows/webnovel.yml
+          grep -q 'test "$process_failed_count" -eq 0' .github/workflows/webnovel.yml
           grep -q 'Advance scheduler state only after every worker succeeded' .github/workflows/webnovel.yml
+          grep -q "if: \${{ success() && steps.result_check.outputs.complete == 'true' }}" .github/workflows/webnovel.yml
       - name: Verify historical reconciliation uses exact engine revision
         working-directory: public-repo
         run: |
