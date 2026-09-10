@@ -72,12 +72,14 @@ jobs:
           for file in \
             .github/workflows/webnovel.yml \
             .github/workflows/webnovel-discovery.yml \
+            .github/workflows/webnovel-discovery-primary.yml \
             .github/workflows/monthly-ongoing-recheck.yml \
             .github/workflows/webnovel-tracker-recovery.yml; do
             test -s "$file"
           done
           for file in \
             ../private-engine/discovery_crawler.py \
+            ../private-engine/discovery_state_storage.py \
             ../private-engine/drive_source_metadata.py \
             ../private-engine/community_library_entrypoint.py \
             ../private-engine/monthly_community_entrypoint.py \
@@ -85,12 +87,13 @@ jobs:
             test -s "$file"
           done
 
-      - name: Verify recursive discovery is enabled
+      - name: Verify primary recursive discovery is enabled
         working-directory: public-repo
         run: |
           set -euo pipefail
-          grep -q 'DISCOVERY_ROOTS' .github/workflows/webnovel-discovery.yml
-          grep -q 'discovery_crawler.py' .github/workflows/webnovel-discovery.yml
+          grep -q 'DISCOVERY_MODE: "primary"' .github/workflows/webnovel-discovery-primary.yml
+          grep -q 'DISCOVERY_ROOTS' .github/workflows/webnovel-discovery-primary.yml
+          grep -q 'discovery_crawler.py' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'same_site_recursive' ../private-engine/discovery_crawler.py
 
       - name: Verify no obsolete retry wrapper remains
