@@ -15,8 +15,8 @@ concurrency:
 env:
   PYTHON_VERSION: "3.12"
   DISCOVERY_MODE: "primary"
-  DISCOVERY_REQUIRE_REMOTE_STATE: "false"
-  DISCOVERY_STATE_FOLDER_REQUIRED: "false"
+  DISCOVERY_REQUIRE_REMOTE_STATE: "true"
+  DISCOVERY_STATE_FOLDER_REQUIRED: "true"
   DISCOVERY_WORKERS: "8"
   DISCOVERY_REQUEST_TIMEOUT: "30"
   DISCOVERY_DELAY_SECONDS: "0.15"
@@ -83,11 +83,8 @@ jobs:
           DISCOVERY_PAGE_RETRIES: ${{ env.DISCOVERY_PAGE_RETRIES }}
         run: |
           set -euo pipefail
-          if [[ -n "${DISCOVERY_STATE_FOLDER_ID:-}" || -n "${GOOGLE_DRIVE_FOLDER_ID:-}" ]]; then
-            echo "Remote discovery state folder configured."
-          else
-            echo "No discovery state folder configured; using runner-local checkpoint state."
-          fi
+          test -n "${DISCOVERY_STATE_FOLDER_ID:-}${GOOGLE_DRIVE_FOLDER_ID:-}"
+          echo "Remote discovery checkpoint state is mandatory in production."
           python discovery_crawler.py
 
       - name: Require a complete, error-free crawl before replacing the catalog
@@ -120,7 +117,16 @@ jobs:
           count=$(jq 'length' data/scraped_novels.json)
           new=$(jq -r '.new_novel_urls' data/discovery_report.json)
           git commit -m "Update recursive FreeWebNovel catalog: ${count} novels (${new} new)"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Private catalog push conflicted; refreshing main and retrying ($attempt/3)"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "Unable to publish discovery catalog after 3 attempts"
+          exit 1
 
       - name: Upload discovery report
         if: always()
@@ -131,4 +137,4 @@ jobs:
             private-engine/data/discovery_report.json
             private-engine/data/discovered_novels.json
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30
