@@ -35,7 +35,9 @@ env:
   NOVEL_SOURCE_FILE: "data/scraped_novels.json"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
   COMMUNITY_LIBRARY_POLL_SECONDS: "300"
-  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "1200"
+  # Keep watching until the novel appears. The worker's 330-minute GitHub job
+  # timeout is the external safety limit; there is no 20-minute library timeout.
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "2147483647"
   COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
 
 concurrency:
