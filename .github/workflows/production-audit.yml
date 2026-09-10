@@ -21,30 +21,26 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout public repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: public-repo
           fetch-depth: 1
-
       - name: Checkout private engine
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
-
       - name: Install pinned dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-
       - name: Compile and run tests
         working-directory: private-engine
         run: |
@@ -53,7 +49,6 @@ jobs:
           python -m unittest discover -s tests -v
           python self_check.py
           python discovery_crawler.py --self-test
-
       - name: Verify every GitHub Action is SHA pinned
         working-directory: public-repo
         run: |
@@ -64,7 +59,6 @@ jobs:
             echo "$bad"
             exit 1
           fi
-
       - name: Verify required production files exist
         working-directory: public-repo
         run: |
@@ -86,7 +80,6 @@ jobs:
             ../private-engine/tests/test_core.py; do
             test -s "$file"
           done
-
       - name: Verify primary recursive discovery is enabled
         working-directory: public-repo
         run: |
@@ -97,7 +90,6 @@ jobs:
           grep -q 'DISCOVERY_ROOTS' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'discovery_crawler.py' .github/workflows/webnovel-discovery-primary.yml
           grep -q 'same_site_recursive' ../private-engine/discovery_crawler.py
-
       - name: Verify no obsolete retry wrapper remains
         working-directory: private-engine
         run: test ! -e run_worker_retry.py
