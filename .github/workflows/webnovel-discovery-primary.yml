@@ -8,10 +8,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: webnovel-discovery
-  cancel-in-progress: false
-
 env:
   PYTHON_VERSION: "3.12"
   DISCOVERY_MODE: "primary"
@@ -28,6 +24,10 @@ env:
   DISCOVERY_REPORT_FILE: "data/discovery_report.json"
   DISCOVERY_ROOTS: "https://freewebnovel.com/home,https://freewebnovel.com/sort/latest-novel/,https://freewebnovel.com/sort/latest-release/"
 
+concurrency:
+  group: webnovel-discovery
+  cancel-in-progress: false
+
 jobs:
   discover:
     runs-on: ubuntu-latest
@@ -39,7 +39,7 @@ jobs:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
