@@ -1,0 +1,224 @@
+name: WebNovel Tracker Sheet Replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Completed WebNovel Downloader run ID whose existing worker artifacts should be written to Sheet1/Sheet2"
+        required: true
+        type: string
+      tracker_engine_sha:
+        description: "Private engine commit containing the tracker fixes"
+        required: true
+        default: "eb1ee156e129990c08e9a343833786f4d549f8f0"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  WORKFLOW_COUNT: "20"
+  GOOGLE_COMPLETED_SHEET: "Sheet1"
+  GOOGLE_ONGOING_SHEET: "Sheet2"
+  SHEETS_HTTP_TIMEOUT_SECONDS: "120"
+  SHEETS_RETRY_ATTEMPTS: "7"
+
+concurrency:
+  group: webnovel-tracker-sheet-replay
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate inputs
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          TRACKER_ENGINE_SHA: ${{ inputs.tracker_engine_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run_id must be numeric"; exit 1; }
+          [[ "$TRACKER_ENGINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "tracker_engine_sha must be a full commit SHA"; exit 1; }
+
+      - name: Download and validate historical run artifacts
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        with:
+          script: |
+            const fs = require('fs');
+            const runId = Number(process.env.RUN_ID);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const run = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+            if (run.data.name !== 'WebNovel Downloader') {
+              core.setFailed(`Run ${runId} belongs to '${run.data.name}', not 'WebNovel Downloader'`);
+              return;
+            }
+            if (run.data.status !== 'completed') {
+              core.setFailed(`Run ${runId} is not completed: ${run.data.status}`);
+              return;
+            }
+            if (run.data.event !== 'schedule') {
+              core.setFailed(`Run ${runId} is not a scheduled production run: event=${run.data.event}`);
+              return;
+            }
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: runId, per_page: 100 }
+            );
+            const expected = new Set(Array.from({length: 20}, (_, i) => `webnovel-worker-${i}`));
+            const workers = artifacts.filter(a => expected.has(a.name) && !a.expired);
+            if (workers.length !== 20) {
+              core.setFailed(`Expected 20 non-expired worker artifacts; found ${workers.length}`);
+              return;
+            }
+            const manifest = artifacts.filter(a => a.name === 'webnovel-run-manifest' && !a.expired);
+            if (manifest.length !== 1) {
+              core.setFailed(`Expected one non-expired run manifest; found ${manifest.length}`);
+              return;
+            }
+            fs.mkdirSync('results', { recursive: true });
+            for (const artifact of workers) {
+              const response = await github.rest.actions.downloadArtifact({
+                owner, repo, artifact_id: artifact.id, archive_format: 'zip'
+              });
+              fs.writeFileSync(`results/${artifact.name}.zip`, Buffer.from(response.data));
+            }
+            const manifestResponse = await github.rest.actions.downloadArtifact({
+              owner, repo, artifact_id: manifest[0].id, archive_format: 'zip'
+            });
+            fs.mkdirSync('run-manifest', { recursive: true });
+            fs.writeFileSync('run-manifest/run-manifest.zip', Buffer.from(manifestResponse.data));
+
+      - name: Extract and validate immutable manifest
+        id: manifest
+        env:
+          EXPECTED_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          unzip -q run-manifest/run-manifest.zip -d run-manifest/extracted
+          test -s run-manifest/extracted/run-manifest.json
+          test -s run-manifest/extracted/run-manifest.sha256
+          (cd run-manifest/extracted && sha256sum -c run-manifest.sha256)
+          jq empty run-manifest/extracted/run-manifest.json
+          workflow=$(jq -r '.workflow' run-manifest/extracted/run-manifest.json)
+          run_id=$(jq -r '.workflow_run_id' run-manifest/extracted/run-manifest.json)
+          workers=$(jq -e '.worker_count | numbers' run-manifest/extracted/run-manifest.json)
+          historical_engine_sha=$(jq -r '.engine_sha' run-manifest/extracted/run-manifest.json)
+          run_index=$(jq -e '.run_index | numbers' run-manifest/extracted/run-manifest.json)
+          [[ "$workflow" == "WebNovel Downloader" ]] || { echo "Invalid workflow in manifest: $workflow"; exit 1; }
+          [[ "$run_id" == "$EXPECTED_RUN_ID" ]] || { echo "Manifest run ID mismatch"; exit 1; }
+          [[ "$workers" -eq 20 ]] || { echo "Manifest worker_count must be 20"; exit 1; }
+          [[ "$historical_engine_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid historical engine SHA"; exit 1; }
+          echo "historical_engine_sha=$historical_engine_sha" >> "$GITHUB_OUTPUT"
+          echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
+          echo "Replay run $run_id, run_index=$run_index, historical engine=$historical_engine_sha"
+
+      - name: Extract worker artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          for zip in results/*.zip; do
+            name=$(basename "$zip" .zip)
+            mkdir -p "extracted/$name"
+            unzip -q "$zip" -d "extracted/$name"
+          done
+          test "$(find extracted -type f -name worker_result.json | wc -l)" -eq "$WORKFLOW_COUNT"
+          test "$(find extracted -type f -name worker_execution_marker.json | wc -l)" -eq "$WORKFLOW_COUNT"
+
+      - name: Validate historical worker provenance and integrity
+        env:
+          EXPECTED_ENGINE_SHA: ${{ steps.manifest.outputs.historical_engine_sha }}
+          EXPECTED_RUN_INDEX: ${{ steps.manifest.outputs.run_index }}
+        run: |
+          set -euo pipefail
+          mapfile -t markers < <(find extracted -type f -name worker_execution_marker.json | sort)
+          test "${#markers[@]}" -eq "$WORKFLOW_COUNT"
+          declare -A seen=()
+          for marker in "${markers[@]}"; do
+            jq empty "$marker"
+            rid=$(jq -e '.worker_id | numbers' "$marker")
+            run=$(jq -e '.run_index | numbers' "$marker")
+            engine=$(jq -er '.engine_sha | strings' "$marker")
+            status=$(jq -er '.status | strings' "$marker")
+            result_sha=$(jq -r '.result_sha256 // ""' "$marker")
+            test "$rid" -ge 0
+            test "$rid" -lt "$WORKFLOW_COUNT"
+            test "$run" -eq "$EXPECTED_RUN_INDEX"
+            test "$engine" = "$EXPECTED_ENGINE_SHA"
+            [[ "$status" == "completed" ]] || { echo "Worker $rid has process status $status; replay refused"; exit 1; }
+            [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate worker marker $rid"; exit 1; }
+            seen[$rid]=1
+            result_file=$(dirname "$marker")/worker_result.json
+            test -s "$result_file"
+            test "$result_sha" = "$(sha256sum "$result_file" | awk '{print $1}')"
+            jq empty "$result_file"
+            jq -e '.rows | arrays' "$result_file" >/dev/null
+            test "$(jq -e '.workflow_id | numbers' "$result_file")" -eq "$rid"
+            test "$(jq -e '.run_index | numbers' "$result_file")" -eq "$EXPECTED_RUN_INDEX"
+          done
+          for expected in $(seq 0 $((WORKFLOW_COUNT - 1))); do
+            [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker marker $expected"; exit 1; }
+          done
+
+      - name: Checkout fixed tracker engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ inputs.tracker_engine_sha }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install fixed tracker dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Replay tracker into Google Sheets
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
+          GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+          SHEETS_HTTP_TIMEOUT_SECONDS: ${{ env.SHEETS_HTTP_TIMEOUT_SECONDS }}
+          SHEETS_RETRY_ATTEMPTS: ${{ env.SHEETS_RETRY_ATTEMPTS }}
+          RUN_ID: ${{ inputs.run_id }}
+          ENGINE_SHA: ${{ inputs.tracker_engine_sha }}
+        run: |
+          set -euo pipefail
+          python sheet_aggregator.py ../extracted
+          test -s tracker_summary.json
+          jq empty tracker_summary.json
+          cat tracker_summary.json
+
+      - name: Verify scheduler state was not modified
+        run: |
+          set -euo pipefail
+          git init -q scheduler-state-check
+          git -C scheduler-state-check remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C scheduler-state-check fetch --depth=1 origin main >/dev/null
+          git -C scheduler-state-check show origin/main:state/scheduler_state.json > scheduler-state-after.json
+          test -s scheduler-state-after.json
+          jq empty scheduler-state-after.json
+          echo "Historical sheet replay never modifies scheduler state."
+
+      - name: Upload replay summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-tracker-sheet-replay-${{ inputs.run_id }}
+          path: private-engine/tracker_summary.json
+          if-no-files-found: ignore
+          retention-days: 30
