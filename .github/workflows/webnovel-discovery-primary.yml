@@ -87,6 +87,22 @@ jobs:
           echo "Remote discovery checkpoint state is mandatory in production."
           python discovery_crawler.py
 
+      - name: Classify only known discovery 404 noise
+        working-directory: private-engine
+        env:
+          DISCOVERY_REQUIRE_REMOTE_STATE: ${{ env.DISCOVERY_REQUIRE_REMOTE_STATE }}
+          DISCOVERY_STATE_FOLDER_REQUIRED: ${{ env.DISCOVERY_STATE_FOLDER_REQUIRED }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          DISCOVERY_STATE_FOLDER_ID: ${{ secrets.DISCOVERY_STATE_FOLDER_ID }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          DISCOVERY_STATE_NAME: ${{ env.DISCOVERY_STATE_NAME }}
+        run: |
+          set -euo pipefail
+          test -n "${DISCOVERY_STATE_FOLDER_ID:-}${GOOGLE_DRIVE_FOLDER_ID:-}"
+          python discovery_error_policy.py data/discovery_report.json
+
       - name: Require a complete, error-free crawl before replacing the catalog
         working-directory: private-engine
         run: |
