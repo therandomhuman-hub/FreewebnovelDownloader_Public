@@ -26,9 +26,11 @@ env:
   GOOGLE_COMPLETED_SHEET: "Sheet1"
   GOOGLE_ONGOING_SHEET: "Sheet2"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
-  COMMUNITY_LIBRARY_POLL_SECONDS: "300"
-  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "18000"
-  COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
+  COMMUNITY_LIBRARY_POLL_SECONDS: "120"
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "600"
+  COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "60"
+  COMMUNITY_LIBRARY_RETRY_PASSES: "0"
+  MONTHLY_MAX_DOWNLOADS_PER_WORKER: "10"
 
 concurrency:
   group: webnovel-downloader
@@ -67,15 +69,15 @@ jobs:
     needs: gate
     if: ${{ needs.gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 240
+    continue-on-error: true
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 10
       matrix:
         worker: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
     steps:
       - name: Checkout private engine
-        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
@@ -83,25 +85,21 @@ jobs:
           path: private-engine
           persist-credentials: false
       - name: Set up Python
-        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
       - name: Install dependencies
-        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
       - name: Run deterministic tests
-        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         working-directory: private-engine
         run: |
           set -euo pipefail
           python -m py_compile *.py tests/*.py
           python -m unittest discover -s tests -v
       - name: Run monthly ongoing recheck
-        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         working-directory: private-engine
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -117,15 +115,16 @@ jobs:
           MONTHLY_RUN_INDEX: ${{ needs.gate.outputs.run_index }}
           MONTHLY_DRY_RUN: ${{ inputs.dry_run || false }}
           METADATA_WORKERS: "5"
+          MONTHLY_MAX_DOWNLOADS_PER_WORKER: ${{ env.MONTHLY_MAX_DOWNLOADS_PER_WORKER }}
           COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
           COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
+          COMMUNITY_LIBRARY_RETRY_PASSES: ${{ env.COMMUNITY_LIBRARY_RETRY_PASSES }}
           SHEETS_HTTP_TIMEOUT_SECONDS: "120"
           SHEETS_RETRY_ATTEMPTS: "7"
         run: python monthly_community_entrypoint.py
       - name: Validate monthly worker result
-        if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         working-directory: private-engine
         env:
           EXPECTED_WORKER: ${{ matrix.worker }}
@@ -138,12 +137,14 @@ jobs:
           run=$(jq -e '.run_index | numbers' worker_result.json)
           total=$(jq -e '.workflow_count | numbers' worker_result.json)
           failed=$(jq -e '.failed // 0 | numbers' worker_result.json)
+          deferred=$(jq -e '.download_deferred // 0 | numbers' worker_result.json)
           test "$rid" -eq "$EXPECTED_WORKER"
           test "$run" -eq "$EXPECTED_RUN_INDEX"
           test "$total" -eq "$WORKFLOW_COUNT"
           test "$failed" -eq 0
+          test "$deferred" -ge 0
       - name: Upload monthly worker result
-        if: ${{ always() && (github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0')) }}
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: webnovel-monthly-worker-${{ matrix.worker }}
@@ -191,10 +192,12 @@ jobs:
             rid=$(jq -e '.workflow_id | numbers' "$f")
             run=$(jq -e '.run_index | numbers' "$f")
             failed=$(jq -e '.failed // 0 | numbers' "$f")
+            deferred=$(jq -e '.download_deferred // 0 | numbers' "$f")
             test "$run" -eq "$EXPECTED_RUN_INDEX"
             test "$rid" -ge 0
             test "$rid" -lt "$WORKFLOW_COUNT"
             test "$failed" -eq 0
+            test "$deferred" -ge 0
             [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate monthly worker result: $rid"; exit 1; }
             seen[$rid]=1
           done
