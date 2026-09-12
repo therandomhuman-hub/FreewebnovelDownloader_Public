@@ -34,9 +34,10 @@ env:
   GOOGLE_ONGOING_SHEET: "Sheet2"
   NOVEL_SOURCE_FILE: "data/scraped_novels.json"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
-  COMMUNITY_LIBRARY_POLL_SECONDS: "300"
-  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "18000"
-  COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
+  COMMUNITY_LIBRARY_POLL_SECONDS: "120"
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "600"
+  COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "60"
+  COMMUNITY_LIBRARY_RETRY_PASSES: "0"
 
 concurrency:
   group: webnovel-downloader
@@ -97,6 +98,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
+          persist-credentials: false
       - name: Read scheduler state
         id: state
         run: |
@@ -142,11 +144,11 @@ jobs:
   worker:
     needs: coordinator
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 240
     continue-on-error: true
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 10
       matrix:
         worker: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
     steps:
@@ -208,6 +210,7 @@ jobs:
           COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
+          COMMUNITY_LIBRARY_RETRY_PASSES: ${{ env.COMMUNITY_LIBRARY_RETRY_PASSES }}
         run: python community_library_entrypoint.py
       - name: Validate worker result
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
@@ -293,6 +296,7 @@ jobs:
         with:
           path: scheduler-state
           fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -379,8 +383,12 @@ jobs:
         working-directory: scheduler-state
         env:
           RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          test -n "$GITHUB_TOKEN"
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           current=$(jq -e '.run_index | numbers' state/scheduler_state.json)
           test "$current" = "$RUN_INDEX"
           next_index=$((RUN_INDEX + 1))
@@ -392,11 +400,11 @@ jobs:
           git diff --cached --quiet && { echo "Scheduler state already current"; exit 0; }
           git commit -m "Advance WebNovel scheduler to run $next_index"
           for attempt in 1 2 3; do
-            if git push origin HEAD:main; then
+            if git -c http.extraheader="$GIT_AUTH_HEADER" push origin HEAD:main; then
               exit 0
             fi
             echo "Scheduler state push conflicted; refreshing main and retrying ($attempt/3)"
-            git fetch origin main
+            git -c http.extraheader="$GIT_AUTH_HEADER" fetch origin main
             remote_run=$(git show origin/main:state/scheduler_state.json | jq -e '.run_index | numbers')
             if [[ "$remote_run" != "$RUN_INDEX" ]]; then
               echo "Scheduler state changed remotely from $RUN_INDEX to $remote_run; refusing to overwrite it."
