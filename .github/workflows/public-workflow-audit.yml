@@ -1,0 +1,64 @@
+name: Public Workflow Audit
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-workflow-audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Validate production workflow inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            .github/workflows/webnovel.yml
+            .github/workflows/webnovel-discovery-primary.yml
+            .github/workflows/monthly-ongoing-recheck.yml
+            .github/workflows/webnovel-manual-full-pipeline.yml
+            .github/workflows/webnovel-production-e2e.yml
+            .github/workflows/webnovel-tracker-reconcile.yml
+            .github/workflows/webnovel-tracker-recovery.yml
+            .github/workflows/webnovel-tracker-sheet-replay.yml
+            .github/workflows/production-audit.yml
+            .github/workflows/deploy-pages.yml
+          )
+          for file in "${files[@]}"; do test -s "$file"; done
+
+      - name: Validate action pinning and credential policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad_actions=$(grep -R -nE '^[[:space:]]*uses:.*@' .github/workflows | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)
+          test -z "$bad_actions"
+          bad_credentials=$(grep -R -n 'persist-credentials: true' .github/workflows || true)
+          test -z "$bad_credentials"
+
+      - name: Validate production gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'process_failed_count=' .github/workflows/webnovel.yml
+          grep -Fq 'Fail-closed manual E2E gate' .github/workflows/webnovel.yml
+          grep -Fq 'private-engine/logs/**' .github/workflows/webnovel.yml
+          grep -Fq 'engine_sha: ${{ steps.engine.outputs.commit }}' .github/workflows/monthly-ongoing-recheck.yml
+          grep -Fq 'ref: ${{ needs.gate.outputs.engine_sha }}' .github/workflows/monthly-ongoing-recheck.yml
+          grep -Fq 'private-engine/logs/**' .github/workflows/monthly-ongoing-recheck.yml
+          grep -Fq 'Fail-closed E2E validation' .github/workflows/webnovel-production-e2e.yml
+          grep -Fq 'private-engine/logs/**' .github/workflows/webnovel-production-e2e.yml
+          grep -Fq 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -Fq 'GIT_AUTH_HEADER' .github/workflows/webnovel-tracker-recovery.yml
