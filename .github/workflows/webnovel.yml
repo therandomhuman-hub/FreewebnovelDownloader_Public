@@ -211,7 +211,9 @@ jobs:
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
           COMMUNITY_LIBRARY_RETRY_PASSES: ${{ env.COMMUNITY_LIBRARY_RETRY_PASSES }}
-        run: python community_library_entrypoint.py
+        run: |
+          set -euo pipefail
+          python parallel_community_runner.py
       - name: Validate worker result
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         continue-on-error: true
