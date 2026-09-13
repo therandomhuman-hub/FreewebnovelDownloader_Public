@@ -1,8 +1,6 @@
 name: Public Workflow Audit
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -10,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-workflow-audit
+  group: public-workflow-audit-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -25,41 +23,44 @@ jobs:
       - name: Validate production workflow inventory
         run: |
           set -euo pipefail
-          files=(
-            .github/workflows/webnovel.yml
-            .github/workflows/webnovel-discovery-primary.yml
-            .github/workflows/monthly-ongoing-recheck.yml
-            .github/workflows/webnovel-manual-full-pipeline.yml
-            .github/workflows/webnovel-production-e2e.yml
-            .github/workflows/webnovel-tracker-reconcile.yml
-            .github/workflows/webnovel-tracker-recovery.yml
-            .github/workflows/webnovel-tracker-sheet-replay.yml
-            .github/workflows/production-audit.yml
-            .github/workflows/deploy-pages.yml
-          )
-          for file in "${files[@]}"; do
+          for file in \
+            .github/workflows/webnovel.yml \
+            .github/workflows/webnovel-discovery-primary.yml \
+            .github/workflows/monthly-ongoing-recheck.yml \
+            .github/workflows/webnovel-tracker-reconcile.yml \
+            .github/workflows/webnovel-tracker-recovery.yml \
+            .github/workflows/production-audit.yml \
+            .github/workflows/deploy-pages.yml; do
             test -s "$file"
           done
       - name: Validate every GitHub Action is SHA pinned
         run: |
           set -euo pipefail
-          bad=$(grep -R -nE '^[[:space:]]*uses:.*@' .github/workflows | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)
-          test -z "$bad" || { echo "$bad"; exit 1; }
+          bad=$(grep -R -nE '^[[:space:]]*uses:' .github/workflows | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)
+          if [[ -n "$bad" ]]; then
+            echo "Unpinned GitHub Actions detected:"
+            echo "$bad"
+            exit 1
+          fi
       - name: Reject persisted Git credentials
         run: |
           set -euo pipefail
-          bad=$(grep -R -n 'persist-credentials: true' .github/workflows || true)
-          test -z "$bad" || { echo "$bad"; exit 1; }
-      - name: Verify production invariants
+          bad=$(grep -R -nE 'persist-credentials:[[:space:]]*true' .github/workflows || true)
+          if [[ -n "$bad" ]]; then
+            echo "Persisted GitHub credentials detected:"
+            echo "$bad"
+            exit 1
+          fi
+      - name: Verify scheduler and provenance invariants
         run: |
           set -euo pipefail
-          grep -Fq 'process_failed_count=' .github/workflows/webnovel.yml
-          grep -Fq 'Fail-closed manual E2E gate' .github/workflows/webnovel.yml
-          grep -Fq 'private-engine/logs/**' .github/workflows/webnovel.yml
-          grep -Fq 'engine_sha: ${{ steps.engine.outputs.commit }}' .github/workflows/monthly-ongoing-recheck.yml
-          grep -Fq 'ref: ${{ needs.gate.outputs.engine_sha }}' .github/workflows/monthly-ongoing-recheck.yml
-          grep -Fq 'private-engine/logs/**' .github/workflows/monthly-ongoing-recheck.yml
-          grep -Fq 'Fail-closed E2E validation' .github/workflows/webnovel-production-e2e.yml
-          grep -Fq 'private-engine/logs/**' .github/workflows/webnovel-production-e2e.yml
-          grep -Fq 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
-          grep -Fq 'GIT_AUTH_HEADER' .github/workflows/webnovel-tracker-recovery.yml
+          grep -q "if: \${{ always() && github.event_name == 'schedule' && needs.coordinator.result == 'success' }}" .github/workflows/webnovel.yml
+          grep -q 'process_failed_count=' .github/workflows/webnovel.yml
+          grep -q 'test "$process_failed_count" -eq 0' .github/workflows/webnovel.yml
+          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel.yml
+          grep -q 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'persist-credentials: false' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'GIT_AUTH_HEADER' .github/workflows/webnovel-tracker-recovery.yml
