@@ -1,0 +1,141 @@
+name: WebNovel Manual Full Pipeline Gate
+
+on:
+  workflow_run:
+    workflows:
+      - WebNovel Manual Full Pipeline
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: webnovel-downloader-manual-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Download manual pipeline manifest and worker artifacts
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        with:
+          script: |
+            const fs = require('fs');
+            const runId = Number(process.env.RUN_ID);
+            const { owner, repo } = context.repo;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: runId, per_page: 100 }
+            );
+            const manifest = artifacts.filter(a => a.name === 'webnovel-manual-run-manifest' && !a.expired);
+            const workers = artifacts.filter(a => /^webnovel-manual-worker-\d+$/.test(a.name) && !a.expired);
+            if (manifest.length !== 1) core.setFailed(`Expected one manual manifest; found ${manifest.length}`);
+            if (workers.length !== 20) core.setFailed(`Expected 20 manual worker artifacts; found ${workers.length}`);
+            if (manifest.length !== 1 || workers.length !== 20) return;
+            fs.mkdirSync('artifacts', { recursive: true });
+            for (const artifact of [...manifest, ...workers]) {
+              const response = await github.rest.actions.downloadArtifact({ owner, repo, artifact_id: artifact.id, archive_format: 'zip' });
+              fs.writeFileSync(`artifacts/${artifact.name}.zip`, Buffer.from(response.data));
+            }
+            core.info(`Downloaded ${workers.length} worker artifacts and manifest for run ${runId}`);
+
+      - name: Extract and validate immutable manifest
+        id: manifest
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          mkdir -p manifest workers
+          unzip -q artifacts/webnovel-manual-run-manifest.zip -d manifest
+          test -s manifest/run-manifest.json
+          test -s manifest/run-manifest.sha256
+          (cd manifest && sha256sum -c run-manifest.sha256)
+          workflow=$(jq -r '.workflow' manifest/run-manifest.json)
+          run_id=$(jq -r '.workflow_run_id' manifest/run-manifest.json)
+          workers_count=$(jq -e '.worker_count | numbers' manifest/run-manifest.json)
+          engine_sha=$(jq -r '.engine_sha' manifest/run-manifest.json)
+          test "$workflow" = "WebNovel Manual Full Pipeline"
+          test "$run_id" = "$RUN_ID"
+          test "$workers_count" -eq 20
+          [[ "$engine_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "engine_sha=$engine_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Extract worker bundles and identify real worker
+        id: input
+        run: |
+          set -euo pipefail
+          mkdir -p workers
+          for zip in artifacts/webnovel-manual-worker-*.zip; do
+            name=$(basename "$zip" .zip)
+            mkdir -p "workers/$name"
+            unzip -q "$zip" -d "workers/$name"
+          done
+          mapfile -t results < <(find workers -type f -name worker_result.json | sort)
+          mapfile -t markers < <(find workers -type f -name worker_execution_marker.json | sort)
+          test "${#results[@]}" -eq 20
+          test "${#markers[@]}" -eq 20
+          real_count=0
+          real_url=""
+          for result in "${results[@]}"; do
+            jq empty "$result"
+            rows=$(jq -e '.rows | arrays | length' "$result")
+            if [[ "$rows" -gt 0 ]]; then
+              real_count=$((real_count + 1))
+              real_url=$(jq -er '.rows[0].novel_url | strings' "$result")
+              jq -e '.rows | length == 1' "$result" >/dev/null
+            fi
+          done
+          test "$real_count" -eq 1
+          [[ "$real_url" =~ ^https://freewebnovel\.com/novel/[^?#]+$ ]]
+          echo "test_url=$real_url" >> "$GITHUB_OUTPUT"
+          echo "Identified exactly one real worker result: $real_url"
+
+      - name: Checkout exact tested private engine revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ steps.manifest.outputs.engine_sha }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Run strict final E2E gate against the real worker URL
+        working-directory: private-engine
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          TEST_URL: ${{ steps.input.outputs.test_url }}
+        run: |
+          set -euo pipefail
+          python e2e_gate.py --test-url "$TEST_URL"
+
+      - name: Upload gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-manual-full-pipeline-gate
+          path: |
+            private-engine/worker_result.json
+            private-engine/logs/**
+            manifest/run-manifest.json
+          if-no-files-found: warn
+          retention-days: 30
