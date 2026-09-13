@@ -30,7 +30,7 @@ env:
   COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "90"
 
 concurrency:
-  group: webnovel-manual-full-pipeline
+  group: webnovel-downloader
   cancel-in-progress: false
 
 jobs:
@@ -201,7 +201,7 @@ jobs:
           COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
-        run: python community_library_entrypoint.py
+        run: python parallel_community_runner.py
       - name: Validate real worker result
         if: ${{ matrix.worker == fromJSON(inputs.worker_id) }}
         continue-on-error: true
