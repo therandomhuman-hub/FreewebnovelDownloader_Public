@@ -26,7 +26,7 @@ env:
   SHEETS_RETRY_ATTEMPTS: "7"
 
 concurrency:
-  group: webnovel-tracker-sheet-replay
+  group: webnovel-downloader
   cancel-in-progress: false
 
 jobs:
@@ -110,7 +110,7 @@ jobs:
           workers=$(jq -e '.worker_count | numbers' run-manifest/extracted/run-manifest.json)
           historical_engine_sha=$(jq -r '.engine_sha' run-manifest/extracted/run-manifest.json)
           run_index=$(jq -e '.run_index | numbers' run-manifest/extracted/run-manifest.json)
-          [[ "$workflow" == "WebNovel Downloader" ]] || { echo "Invalid workflow in manifest: $workflow"; exit 1; }
+          [[ "$workflow" == "WebNovel Downloader" ]] || { echo "Invalid manifest workflow: $workflow"; exit 1; }
           [[ "$run_id" == "$EXPECTED_RUN_ID" ]] || { echo "Manifest run ID mismatch"; exit 1; }
           [[ "$workers" -eq 20 ]] || { echo "Manifest worker_count must be 20"; exit 1; }
           [[ "$historical_engine_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid historical engine SHA"; exit 1; }
