@@ -211,7 +211,9 @@ jobs:
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
           COMMUNITY_LIBRARY_RETRY_PASSES: ${{ env.COMMUNITY_LIBRARY_RETRY_PASSES }}
-        run: python community_library_entrypoint.py
+        run: |
+          set -euo pipefail
+          python parallel_community_runner.py
       - name: Validate worker result
         if: ${{ github.event_name == 'schedule' || matrix.worker == fromJSON(inputs.worker_id || '0') }}
         continue-on-error: true
@@ -336,83 +338,58 @@ jobs:
             [[ -z "${seen[$rid]+x}" ]] || { echo "Duplicate worker marker: $rid"; exit 1; }
             seen[$rid]=1
             result_file=$(dirname "$marker")/worker_result.json
-            if [[ "$status" == "completed" ]]; then
-              test -s "$result_file"
-              test "$result_sha" = "$(sha256sum "$result_file" | awk '{print $1}')"
-              jq empty "$result_file"
-              jq -e '.rows | arrays' "$result_file" >/dev/null
-              [[ "$failed" -ge 0 ]] || { echo "Invalid per-novel failure count for worker $rid"; exit 1; }
-              if [[ "$failed" -gt 0 ]]; then
-                echo "Worker $rid has per-novel failures: $failed. These rows remain retryable in Sheet2."
-              fi
-            elif [[ "$status" == "process_failed" ]]; then
-              echo "Worker $rid failed at process level; scheduler state will NOT advance."
-              test "$failed" -eq -1
-            else
-              echo "Unknown worker status: $status"
+            test -s "$result_file"
+            test -n "$result_sha"
+            echo "$result_sha  $result_file" | sha256sum -c -
+            if test "$status" != "completed"; then
+              echo "Worker $rid did not produce a completed result: $status"
+              exit 1
+            fi
+            if test "$failed" -ne 0; then
+              echo "Worker $rid reported retryable failures: $failed"
               exit 1
             fi
           done
-          for expected in $(seq 0 $((WORKFLOW_COUNT - 1))); do
-            [[ -n "${seen[$expected]+x}" ]] || { echo "Missing worker marker: $expected"; exit 1; }
+          for rid in $(seq 0 $((WORKFLOW_COUNT - 1))); do
+            test -n "${seen[$rid]+x}" || { echo "Missing worker marker: $rid"; exit 1; }
           done
-          process_failed_count=$(jq -s '[.[] | select(.status == "process_failed")] | length' results/*/worker_execution_marker.json)
-          test "$process_failed_count" -eq 0
-          echo "complete=true" >> "$GITHUB_OUTPUT"
       - name: Update split Google Sheet
-        if: ${{ steps.result_check.outputs.complete == 'true' }}
         working-directory: private-engine
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_COMPLETED_SHEET: Sheet1
           GOOGLE_ONGOING_SHEET: Sheet2
-          SHEETS_HTTP_TIMEOUT_SECONDS: "120"
-          SHEETS_RETRY_ATTEMPTS: "7"
-        run: python sheet_aggregator.py ../results
+          RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
+          WORKFLOW_COUNT: ${{ env.WORKFLOW_COUNT }}
+        run: |
+          set -euo pipefail
+          python sheet_aggregator.py --results-dir ../results --run-index "$RUN_INDEX" --workflow-count "$WORKFLOW_COUNT"
+          python sheet_verification.py
       - name: Upload tracker summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: webnovel-tracker-summary
-          path: private-engine/tracker_summary.json
-          if-no-files-found: ignore
+          path: |
+            private-engine/tracker_summary.json
+            private-engine/sheet_verification.json
+          if-no-files-found: error
           retention-days: 30
       - name: Advance scheduler state only after every worker succeeded
-        if: ${{ success() && steps.result_check.outputs.complete == 'true' }}
         working-directory: scheduler-state
         env:
-          RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+          EXPECTED_RUN_INDEX: ${{ needs.coordinator.outputs.run_index }}
         run: |
           set -euo pipefail
-          test -n "$GITHUB_TOKEN"
-          export GIT_TERMINAL_PROMPT=0
-          export GIT_AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           current=$(jq -e '.run_index | numbers' state/scheduler_state.json)
-          test "$current" = "$RUN_INDEX"
-          next_index=$((RUN_INDEX + 1))
-          jq --argjson next "$next_index" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson completed "$RUN_INDEX" '.run_index=$next | .last_completed_run_index=$completed | .last_completed_at=$now' state/scheduler_state.json > state/scheduler_state.tmp
-          mv state/scheduler_state.tmp state/scheduler_state.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          test "$current" -eq "$EXPECTED_RUN_INDEX"
+          next=$((current + 1))
+          jq --argjson next "$next" --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.run_index=$next | .updated_at=$updated_at' state/scheduler_state.json > state/scheduler_state.json.tmp
+          mv state/scheduler_state.json.tmp state/scheduler_state.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add state/scheduler_state.json
-          git diff --cached --quiet && { echo "Scheduler state already current"; exit 0; }
-          git commit -m "Advance WebNovel scheduler to run $next_index"
-          for attempt in 1 2 3; do
-            if git -c http.extraheader="$GIT_AUTH_HEADER" push origin HEAD:main; then
-              exit 0
-            fi
-            echo "Scheduler state push conflicted; refreshing main and retrying ($attempt/3)"
-            git -c http.extraheader="$GIT_AUTH_HEADER" fetch origin main
-            remote_run=$(git show origin/main:state/scheduler_state.json | jq -e '.run_index | numbers')
-            if [[ "$remote_run" != "$RUN_INDEX" ]]; then
-              echo "Scheduler state changed remotely from $RUN_INDEX to $remote_run; refusing to overwrite it."
-              exit 1
-            fi
-            git rebase origin/main
-            candidate=$(git show HEAD:state/scheduler_state.json | jq -e '.run_index | numbers')
-            test "$candidate" = "$next_index"
-          done
-          echo "Unable to atomically publish scheduler advancement after 3 attempts"
-          exit 1
+          git commit -m "Advance scheduler state after successful run ${EXPECTED_RUN_INDEX}" \
+            && git push
