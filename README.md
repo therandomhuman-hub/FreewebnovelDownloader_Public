@@ -13,12 +13,18 @@ Recursive discovery ──► canonical novel catalog
     ▼
 20 deterministic workers
     │
-    ├── Completed ──► Community Library ──► Google Drive ──► Sheet1
+    ├── Completed ──► Community Library
+    │                    │
+    │                    ├── submit ALL eligible novels
+    │                    └── watch ALL submitted novels concurrently
+    │                                      │
+    │                                      ▼
+    │                                Google Drive ──► Sheet1
     │
-    └── Ongoing / unknown / failed ───────────────────────► Sheet2
-                                                             │
-                                                             ▼
-                                                   monthly recheck
+    └── Ongoing / unknown / failed ───────────────────► Sheet2
+                                                        │
+                                                        ▼
+                                                 monthly recheck
 ```
 
 ## Production guarantees
@@ -26,10 +32,14 @@ Recursive discovery ──► canonical novel catalog
 - **Gap-free scheduling:** persistent `run_index` partitions the catalog; a failed scheduled run is not silently skipped.
 - **Immutable provenance:** every scheduled run records the exact private-engine commit, public commit, run ID, worker count, and scheduling parameters.
 - **Deterministic workers:** every worker receives the exact private-engine revision tested by the health check.
+- **Two-phase Community Library processing:** all eligible submissions are completed before any watcher starts; all submitted conversions are then watched concurrently with isolated browser/download sessions.
+- **No conversion timeout:** the application does not abandon a submitted Community Library conversion because it is slow; only infrastructure/job termination can stop a run.
+- **Strict result selection:** production watchers require exact normalized Community Library title/source-title/slug equality rather than unsafe short-title substring matches.
+- **Fail-closed Drive idempotency:** the exact source URL is the archive identity. A Drive provenance lookup failure blocks generation rather than assuming the file is absent.
 - **Fail-closed tracking:** scheduler state advances only after all expected worker results are present, valid, integrity-checked, and successfully reconciled to Google Sheets.
 - **Worker isolation:** process-level worker failures block reconciliation; per-novel failures remain retryable in Sheet2.
-- **Idempotent storage:** Drive is checked before EPUB generation/upload, preventing duplicate work.
 - **Safe recovery:** historical reconciliation uses the run's recorded engine revision and never advances scheduler state.
+- **Serialized Sheet mutations:** production, recovery, reconciliation, and replay workflows share the same concurrency lock.
 - **Discovery safety:** a partial or error-producing crawl cannot replace the known-good catalog.
 - **Action integrity:** GitHub Actions are pinned to immutable commit SHAs.
 
@@ -42,6 +52,7 @@ Recursive discovery ──► canonical novel catalog
 | `monthly-ongoing-recheck.yml` | Month-end recheck of Sheet2 |
 | `webnovel-tracker-reconcile.yml` | Manual reconciliation of a historical run |
 | `webnovel-tracker-recovery.yml` | Historical tracker recovery without scheduler advancement |
+| `webnovel-tracker-sheet-replay.yml` | Historical Sheet replay without scheduler advancement |
 | `production-audit.yml` | Automated production-readiness checks |
 | `deploy-pages.yml` | GitHub Pages deployment |
 
@@ -49,7 +60,7 @@ Recursive discovery ──► canonical novel catalog
 
 The production downloader runs four times per day with 20 workers. Each worker processes two batches of five URLs, for a maximum of 200 URL checks per scheduled run. The scheduler uses the current catalog length, so it does not depend on a hard-coded catalog size.
 
-Manual workflow runs are operational tests only. They never advance production scheduler state.
+Manual workflow runs are operational tests only. They never advance production scheduler state. Real manual E2E runs use the same production concurrency lock as scheduled processing.
 
 ## Discovery
 
@@ -64,7 +75,7 @@ Google Sheets uses two tabs:
 - **Sheet1:** novels confirmed completed and successfully stored in Google Drive.
 - **Sheet2:** ongoing, unknown, metadata-error, or download-failure rows awaiting later processing.
 
-Only the tracker job writes the production Sheets. Workers publish result artifacts and execution markers.
+Only the tracker job writes the production Sheets. Workers publish result artifacts and execution markers. Manual Sheet reconciliation/replay operations are serialized against production Sheet writes.
 
 ## Required secrets
 
