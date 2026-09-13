@@ -30,6 +30,7 @@ jobs:
             .github/workflows/webnovel-discovery-primary.yml
             .github/workflows/monthly-ongoing-recheck.yml
             .github/workflows/webnovel-manual-full-pipeline.yml
+            .github/workflows/webnovel-manual-full-pipeline-gate.yml
             .github/workflows/webnovel-production-e2e.yml
             .github/workflows/webnovel-tracker-reconcile.yml
             .github/workflows/webnovel-tracker-recovery.yml
@@ -61,4 +62,6 @@ jobs:
           grep -Fq 'Fail-closed E2E validation' .github/workflows/webnovel-production-e2e.yml
           grep -Fq 'private-engine/logs/**' .github/workflows/webnovel-production-e2e.yml
           grep -Fq 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -Fq 'workflows:' .github/workflows/webnovel-manual-full-pipeline-gate.yml
+          grep -Fq 'python e2e_gate.py --test-url' .github/workflows/webnovel-manual-full-pipeline-gate.yml
           grep -Fq 'GIT_AUTH_HEADER' .github/workflows/webnovel-tracker-recovery.yml
