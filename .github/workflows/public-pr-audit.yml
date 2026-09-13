@@ -1,6 +1,8 @@
 name: Public Workflow Audit
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -8,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-workflow-audit-${{ github.event.pull_request.number }}
+  group: public-workflow-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -27,8 +29,11 @@ jobs:
             .github/workflows/webnovel.yml \
             .github/workflows/webnovel-discovery-primary.yml \
             .github/workflows/monthly-ongoing-recheck.yml \
+            .github/workflows/webnovel-manual-full-pipeline.yml \
+            .github/workflows/webnovel-production-e2e.yml \
             .github/workflows/webnovel-tracker-reconcile.yml \
             .github/workflows/webnovel-tracker-recovery.yml \
+            .github/workflows/webnovel-tracker-sheet-replay.yml \
             .github/workflows/production-audit.yml \
             .github/workflows/deploy-pages.yml; do
             test -s "$file"
@@ -57,9 +62,15 @@ jobs:
           grep -q "if: \${{ always() && github.event_name == 'schedule' && needs.coordinator.result == 'success' }}" .github/workflows/webnovel.yml
           grep -q 'process_failed_count=' .github/workflows/webnovel.yml
           grep -q 'test "$process_failed_count" -eq 0' .github/workflows/webnovel.yml
-          grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel.yml
-          grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel.yml
-          grep -q 'ref: ${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
+          grep -q 'ENGINE_SHA: \${{ needs.coordinator.outputs.engine_sha }}' .github/workflows/webnovel.yml
+          grep -q 'Fail-closed manual E2E gate' .github/workflows/webnovel.yml
+          grep -q 'private-engine/logs/\*\*' .github/workflows/webnovel.yml
+          grep -q 'engine_sha: \${{ steps.engine.outputs.commit }}' .github/workflows/monthly-ongoing-recheck.yml
+          grep -q 'ref: \${{ needs.gate.outputs.engine_sha }}' .github/workflows/monthly-ongoing-recheck.yml
+          grep -q 'private-engine/logs/\*\*' .github/workflows/monthly-ongoing-recheck.yml
+          grep -q 'Fail-closed E2E validation' .github/workflows/webnovel-production-e2e.yml
+          grep -q 'private-engine/logs/\*\*' .github/workflows/webnovel-production-e2e.yml
+          grep -q 'ref: \${{ steps.manifest.outputs.engine_sha }}' .github/workflows/webnovel-tracker-reconcile.yml
           grep -q 'engine=$(jq -er '\''.engine_sha | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
           grep -q 'status=$(jq -er '\''.status | strings'\'' "$marker")' .github/workflows/webnovel-tracker-reconcile.yml
           grep -q 'persist-credentials: false' .github/workflows/webnovel-tracker-reconcile.yml
