@@ -52,7 +52,7 @@ jobs:
             printf '%s\n' "$bad_actions"
             exit 1
           fi
-          bad_credentials=$(grep -R -n 'persist-credentials: true' .github/workflows || true)
+          bad_credentials=$(grep -R -nE 'persist-credentials:[[:space:]]*true([[:space:]]|$)' .github/workflows --exclude='public-workflow-audit.yml' || true)
           if [[ -n "$bad_credentials" ]]; then
             echo "Persisted Git credentials detected:"
             printf '%s\n' "$bad_credentials"
