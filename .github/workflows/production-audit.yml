@@ -100,7 +100,7 @@ jobs:
         working-directory: private-engine
         run: |
           set -euo pipefail
-          for file in parallel_community_runner.py community_library_entrypoint.py community_library_worker.py community_match.py drive_storage.py drive_source_metadata.py epub_validator.py e2e_gate.py production_audit.py runtime_log.py; do
+          for file in parallel_community_runner.py community_library_entrypoint.py community_library_worker.py community_match.py drive_storage.py drive_source_metadata.py epub_validator.py e2e_gate.py production_audit.py runtime_log.py sitecustomize.py; do
             test -s "$file"
           done
       - name: Verify structured runtime log facility
@@ -112,3 +112,11 @@ jobs:
           runtime_log.run_context(workflow="production-audit", phase="audit")
           print(runtime_log.LOG_FILE)
           PY
+      - name: Upload audit diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-production-audit-diagnostics
+          path: private-engine/logs/**
+          if-no-files-found: warn
+          retention-days: 14
