@@ -10,7 +10,7 @@ on:
       tracker_engine_sha:
         description: "Private engine commit containing the tracker fixes"
         required: true
-        default: "eb1ee156e129990c08e9a343833786f4d549f8f0"
+        default: "5b5388881585ef171576335afe9b54f225a9728d"
         type: string
 
 permissions:
@@ -112,7 +112,7 @@ jobs:
           run_index=$(jq -e '.run_index | numbers' run-manifest/extracted/run-manifest.json)
           [[ "$workflow" == "WebNovel Downloader" ]] || { echo "Invalid manifest workflow: $workflow"; exit 1; }
           [[ "$run_id" == "$EXPECTED_RUN_ID" ]] || { echo "Manifest run ID mismatch"; exit 1; }
-          [[ "$workers" -eq 20 ]] || { echo "Manifest worker_count must be 20"; exit 1; }
+          [[ "$workers" -eq 20 ]] || { echo "Manifest worker count is not 20"; exit 1; }
           [[ "$historical_engine_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid historical engine SHA"; exit 1; }
           echo "historical_engine_sha=$historical_engine_sha" >> "$GITHUB_OUTPUT"
           echo "run_index=$run_index" >> "$GITHUB_OUTPUT"
