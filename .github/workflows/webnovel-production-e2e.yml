@@ -41,7 +41,11 @@ jobs:
 
       - name: Record engine revision
         working-directory: private-engine
-        run: git rev-parse HEAD | tee engine-sha.txt
+        run: |
+          set -euo pipefail
+          engine_sha=$(git rev-parse HEAD)
+          echo "$engine_sha" | tee engine-sha.txt
+          echo "ENGINE_SHA=$engine_sha" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -117,5 +121,6 @@ jobs:
           path: |
             private-engine/engine-sha.txt
             private-engine/worker_result.json
+            private-engine/logs/**
           if-no-files-found: warn
           retention-days: 30
