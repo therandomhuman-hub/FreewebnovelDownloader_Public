@@ -17,6 +17,8 @@ env:
   STATUS_RETRIES: "3"
   STATUS_DELAY_SECONDS: "0.08"
   STATUS_EXPECTED_CATALOG_COUNT: "12419"
+  STATUS_RETRY_ROUND_DELAY: "8"
+  STATUS_MAX_ROUNDS: "0"
 
 concurrency:
   group: webnovel-status-catalog
@@ -53,20 +55,9 @@ jobs:
           python -m py_compile novel_status_classifier.py
           python - <<'PY'
           from novel_status_classifier import extract_metadata
-
-          ongoing = '''<html><body>
-          <a>OnGoing</a><h1>Example Novel</h1>
-          <div>### 6 Latest Chapters[ Updated a month ago ]</div>
-          </body></html>'''
-          stale = '''<html><body>
-          <a>OnGoing</a><h1>Old Novel</h1>
-          <div>### 6 Latest Chapters[ Updated 7 years ago ]</div>
-          </body></html>'''
-          completed = '''<html><body>
-          <a>Completed</a><h1>Finished Novel</h1>
-          <div>### 6 Latest Chapters[ Updated 2 years ago ]</div>
-          </body></html>'''
-
+          ongoing = '''<html><body><a>OnGoing</a><h1>Example Novel</h1><div>Updated a month ago</div></body></html>'''
+          stale = '''<html><body><a>OnGoing</a><h1>Old Novel</h1><div>Updated 7 years ago</div></body></html>'''
+          completed = '''<html><body><a>Completed</a><h1>Finished Novel</h1><div>Updated 2 years ago</div></body></html>'''
           assert extract_metadata('https://freewebnovel.com/novel/example', ongoing)['effective_status'] == 'ongoing'
           assert extract_metadata('https://freewebnovel.com/novel/old', stale)['effective_status'] == 'completed'
           assert extract_metadata('https://freewebnovel.com/novel/finished', completed)['effective_status'] == 'completed'
@@ -83,8 +74,11 @@ jobs:
           jq -e 'type == "array" and length == ($ENV.STATUS_EXPECTED_CATALOG_COUNT | tonumber) and length == (unique | length)' data/novel_links.json >/dev/null
           jq -e 'all(.[]; type == "string" and startswith("https://freewebnovel.com/novel/"))' data/novel_links.json >/dev/null
 
-      - name: Classify every catalog novel
+      - name: Classify every catalog novel until complete
         working-directory: private-engine
+        env:
+          STATUS_RETRY_ROUND_DELAY: ${{ env.STATUS_RETRY_ROUND_DELAY }}
+          STATUS_MAX_ROUNDS: ${{ env.STATUS_MAX_ROUNDS }}
         run: |
           set -euo pipefail
           python novel_status_classifier.py \
@@ -96,7 +90,9 @@ jobs:
             --timeout "$STATUS_REQUEST_TIMEOUT" \
             --retries "$STATUS_RETRIES" \
             --delay "$STATUS_DELAY_SECONDS" \
-            --expected-count "$STATUS_EXPECTED_CATALOG_COUNT"
+            --expected-count "$STATUS_EXPECTED_CATALOG_COUNT" \
+            --retry-round-delay "$STATUS_RETRY_ROUND_DELAY" \
+            --max-rounds "$STATUS_MAX_ROUNDS"
 
       - name: Validate final status catalogs
         working-directory: private-engine
@@ -112,11 +108,11 @@ jobs:
           total=$((completed + ongoing))
           expected=$(jq -r '.expected_catalog_count' data/novel_status_catalog_report.json)
           test "$total" -eq "$expected"
-          jq -e '.complete == true and .error_count == 0 and .processed_count == .catalog_count' data/novel_status_catalog_report.json >/dev/null
+          jq -e '.complete == true and .error_count == 0 and .processed_count == .catalog_count and .classified_count == .catalog_count' data/novel_status_catalog_report.json >/dev/null
           echo "FINAL_COMPLETED_COUNT=$completed"
           echo "FINAL_ONGOING_COUNT=$ongoing"
           echo "FINAL_TOTAL_COUNT=$total"
-          jq '{catalog_count, processed_count, completed_count, ongoing_count, error_count, complete, classification_rules}' data/novel_status_catalog_report.json
+          jq '{catalog_count, processed_count, classified_count, completed_count, ongoing_count, error_count, retry_rounds, complete, classification_rules}' data/novel_status_catalog_report.json
 
       - name: Persist status catalogs to private engine
         working-directory: private-engine
@@ -160,4 +156,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-# run-now marker: 2026-09-14T14:10:00+05:30
+# run-now marker: retry-until-complete
