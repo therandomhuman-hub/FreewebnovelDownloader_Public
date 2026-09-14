@@ -1,0 +1,83 @@
+name: Store 12418 Classified Status Catalogs
+
+on:
+  push:
+    branches:
+      - ops/store-12418-catalog
+
+jobs:
+  store:
+    runs-on: ubuntu-latest
+    env:
+      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+    steps:
+      - name: Checkout private engine
+        uses: actions/checkout@v4
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Generate catalogs from 12418 checkpointed classifications
+        working-directory: private-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          checkpoint = Path('data/status_catalog_checkpoint.jsonl')
+          completed = []
+          ongoing = []
+          seen = set()
+
+          with checkpoint.open('r', encoding='utf-8') as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  record = json.loads(line)
+                  url = record['url']
+                  if url in seen:
+                      continue
+                  seen.add(url)
+                  status = record.get('effective_status')
+                  if status == 'completed':
+                      completed.append(record)
+                  elif status == 'ongoing':
+                      ongoing.append(record)
+                  else:
+                      raise SystemExit(f'Unexpected effective_status for {url}: {status!r}')
+
+          if len(completed) != 6588 or len(ongoing) != 5830 or len(seen) != 12418:
+              raise SystemExit(
+                  f'Unexpected checkpoint totals: completed={len(completed)} '
+                  f'ongoing={len(ongoing)} total={len(seen)}'
+              )
+
+          Path('data/completed_novels.json').write_text(
+              json.dumps({'count': len(completed), 'novels': completed}, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8'
+          )
+          Path('data/ongoing_novels.json').write_text(
+              json.dumps({'count': len(ongoing), 'novels': ongoing}, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8'
+          )
+          print(f'Generated completed={len(completed)} ongoing={len(ongoing)} total={len(seen)}')
+          PY
+
+      - name: Commit catalogs to private engine
+        working-directory: private-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s data/completed_novels.json
+          test -s data/ongoing_novels.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/completed_novels.json data/ongoing_novels.json
+          git commit -m "data: store 12418 classified novel catalogs"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPO_TOKEN}@github.com/therandomhuman-hub/FreewebnovelDownloader_Private.git"
+          git push origin HEAD:main
