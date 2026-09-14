@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 # Production trigger contract: commits containing [RUN-6588] execute the full catalog.
-# [RUN-6588] Post-auth persistence verification trigger.
+# [RUN-6588] Verify Drive OAuth preflight gate.
 
 env:
   PYTHON_VERSION: "3.12"
