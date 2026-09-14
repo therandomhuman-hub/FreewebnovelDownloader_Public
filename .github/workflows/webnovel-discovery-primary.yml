@@ -86,6 +86,55 @@ jobs:
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
           exit 0
 
+      - name: Normalize verified terminal 404s
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report_path = Path("data/novel_link_discovery_report.json")
+          state_path = Path("data/novel_link_discovery_state.json")
+
+          terminal_404s = {
+              "https://freewebnovel.com/cdn-cgi/l/email-protection",
+              "https://freewebnovel.com/genre/Video+Games",
+          }
+
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          samples = dict(report.get("error_samples") or {})
+          terminal = {}
+          blocking = {}
+          for url, error in samples.items():
+              if url in terminal_404s and error == "HTTP 404":
+                  terminal[url] = error
+              else:
+                  blocking[url] = error
+
+          if terminal:
+              existing_terminal = dict(report.get("non_blocking_error_samples") or {})
+              existing_terminal.update(terminal)
+              report["non_blocking_error_samples"] = existing_terminal
+              report["non_blocking_errors"] = len(existing_terminal)
+
+          report["error_samples"] = blocking
+          report["errors"] = len(blocking)
+          if not report.get("interrupted") and not report.get("queue_remaining"):
+              report["complete"] = len(blocking) == 0
+          report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+          state = json.loads(state_path.read_text(encoding="utf-8"))
+          state_errors = dict(state.get("errors") or {})
+          for url in terminal_404s:
+              state_errors.pop(url, None)
+          state["errors"] = state_errors
+          state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          jq empty data/novel_link_discovery_report.json
+          jq empty data/novel_link_discovery_state.json
+
       - name: Persist discovery checkpoint to private engine
         working-directory: private-engine
         env:
@@ -130,7 +179,7 @@ jobs:
           jq empty data/novel_link_discovery_report.json
           if ! jq -e '.complete == true and .errors == 0 and .catalog_source == "fresh_recursive_crawl"' data/novel_link_discovery_report.json >/dev/null; then
             echo "Discovery is still in progress; the persisted checkpoint will be resumed by the next scheduled run."
-            jq '{complete, errors, visited_pages, novel_link_observations, unique_novel_urls, queue_remaining: (if .queue then (.queue|length) else null end)}' data/novel_link_discovery_report.json || true
+            jq '{complete, errors, non_blocking_errors, visited_pages, novel_link_observations, unique_novel_urls, queue_remaining: (if .queue then (.queue|length) else null end)}' data/novel_link_discovery_report.json || true
             exit 0
           fi
           test -s data/novel_links.json
