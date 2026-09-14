@@ -213,17 +213,14 @@ jobs:
           path: results
           merge-multiple: false
       - name: Validate complete 6588-worker result set
-        env:
-          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
+        working-directory: private-engine
         run: |
           set -euo pipefail
-          mapfile -t markers < <(find results -type f -name worker_execution_marker.json | sort)
-          test "${#markers[@]}" -eq 26
-          jq -s -e --arg sha "$ENGINE_SHA" 'length == 26 and ([.[].worker_id] | sort) == [range(0;26)] and all(.[]; .engine_sha == $sha)' "${markers[@]}" >/dev/null
-          mapfile -t results_files < <(find results -type f -name worker_result.json | sort)
-          test "${#results_files[@]}" -eq 26
-          jq -s -e 'map(.rows | length) | add == 6588' "${results_files[@]}" >/dev/null
-          jq -s -e 'map(.rows[] | .novel_url) | length == 6588 and (unique | length) == 6588' "${results_files[@]}" >/dev/null
+          python bulk_validation.py "$GITHUB_WORKSPACE/results"
+          jq -e '
+            .status == "validated"
+            and .duplicates == 0
+          ' bulk_validation_report.json >/dev/null
       - name: Aggregate Google Drive / Sheet1 state
         working-directory: private-engine
         env:
