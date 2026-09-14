@@ -12,17 +12,17 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
-  STATUS_WORKERS: "8"
-  STATUS_REQUEST_TIMEOUT: "12"
+  STATUS_WORKERS: "16"
+  STATUS_REQUEST_TIMEOUT: "15"
   STATUS_RETRIES: "2"
-  STATUS_DELAY_SECONDS: "0.05"
+  STATUS_DELAY_SECONDS: "0.02"
   STATUS_EXPECTED_CATALOG_COUNT: "12419"
-  STATUS_RETRY_ROUND_DELAY: "2"
+  STATUS_RETRY_ROUND_DELAY: "1"
   STATUS_MAX_ROUNDS: "0"
 
 concurrency:
   group: webnovel-status-catalog
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   classify:
@@ -156,4 +156,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-# run-now marker: speed-8-workers-12s-timeout-intra-request-retries
+# run-now marker: protect-12418-and-isolate-failing-url
