@@ -17,7 +17,7 @@ env:
   STATUS_RETRIES: "1"
   STATUS_EXPECTED_CATALOG_COUNT: "12419"
   STATUS_RETRY_ROUND_DELAY: "0.5"
-  STATUS_MAX_ROUNDS: "0"
+  STATUS_MAX_ROUNDS: "10"
   STATUS_CHECKPOINT_EVERY: "1000"
 
 concurrency:
@@ -186,4 +186,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-# run-now marker: force-checkpoint-add-and-resume
+# run-now marker: bounded-retry-checkpoint-resume
