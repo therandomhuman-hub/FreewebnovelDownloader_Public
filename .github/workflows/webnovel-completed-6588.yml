@@ -174,7 +174,8 @@ jobs:
             --arg engine_sha "$ENGINE_SHA" \
             --arg result_sha256 "$result_sha256" \
             '{schema_version:1,worker_id:$shard,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
-            > private-engine/worker_execution_marker.json
+            > worker_execution_marker.json
+          test -s worker_execution_marker.json
       - name: Upload shard result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -235,6 +236,14 @@ jobs:
             and .marker_files == 26
             and .failure_files == 26
           ' bulk_validation_report.json >/dev/null
+      - name: Upload bulk validation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-bulk-validation-${{ github.run_id }}
+          path: private-engine/bulk_validation_report.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Aggregate Google Drive / Sheet1 state
         working-directory: private-engine
         env:
@@ -248,24 +257,34 @@ jobs:
           set -euo pipefail
           python sheet_aggregator.py "$GITHUB_WORKSPACE/results"
       - name: Persist successful run report in private engine
-        if: always()
+        if: ${{ success() }}
         working-directory: private-engine
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           RUN_ID: ${{ github.run_id }}
+          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
         run: |
           set -euo pipefail
-          mkdir -p data/bulk_runs
-          jq -n \
-            --arg run_id "$RUN_ID" \
-            --arg engine_sha "${{ needs.healthcheck.outputs.engine_sha }}" \
-            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{schema_version:1,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:"completed"}' \
-            > data/bulk_runs/latest.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/bulk_runs/latest.json
-          git diff --cached --quiet && exit 0
-          git commit -m "Record completed 6588 bulk downloader run"
-          git remote set-url origin "https://x-access-token:${PRIVATE_REPO_TOKEN}@github.com/therandomhuman-hub/FreewebnovelDownloader_Private.git"
-          git push origin HEAD:main
+          for attempt in 1 2 3 4 5; do
+            git fetch --no-tags origin main
+            git reset --hard origin/main
+            mkdir -p data/bulk_runs
+            jq -n \
+              --arg run_id "$RUN_ID" \
+              --arg engine_sha "$ENGINE_SHA" \
+              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{schema_version:1,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:"completed"}' \
+              > data/bulk_runs/latest.json
+            git add data/bulk_runs/latest.json
+            if git diff --cached --quiet; then
+              exit 0
+            fi
+            git commit -m "Record completed 6588 bulk downloader run"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+          done
+          echo "Failed to persist bulk run report after retries" >&2
+          exit 1
