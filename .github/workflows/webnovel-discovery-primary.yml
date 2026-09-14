@@ -2,6 +2,10 @@ name: WebNovel Novel-Link Discovery
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/webnovel-discovery-primary.yml"
   schedule:
     - cron: "5 0,6,12,18 * * *"
 
