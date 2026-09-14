@@ -12,13 +12,13 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
-  STATUS_WORKERS: "16"
-  STATUS_REQUEST_TIMEOUT: "15"
-  STATUS_RETRIES: "2"
-  STATUS_DELAY_SECONDS: "0.02"
+  STATUS_WORKERS: "384"
+  STATUS_REQUEST_TIMEOUT: "8"
+  STATUS_RETRIES: "1"
   STATUS_EXPECTED_CATALOG_COUNT: "12419"
-  STATUS_RETRY_ROUND_DELAY: "1"
+  STATUS_RETRY_ROUND_DELAY: "0.5"
   STATUS_MAX_ROUNDS: "0"
+  STATUS_CHECKPOINT_EVERY: "1000"
 
 concurrency:
   group: webnovel-status-catalog
@@ -74,9 +74,22 @@ jobs:
           jq -e 'type == "array" and length == ($ENV.STATUS_EXPECTED_CATALOG_COUNT | tonumber) and length == (unique | length)' data/novel_links.json >/dev/null
           jq -e 'all(.[]; type == "string" and startswith("https://freewebnovel.com/novel/"))' data/novel_links.json >/dev/null
 
+      - name: Reset completed checkpoint before a fresh catalog pass
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          if test -s data/status_catalog_checkpoint_meta.json; then
+            if jq -e '.complete == true' data/status_catalog_checkpoint_meta.json >/dev/null; then
+              rm -f data/status_catalog_checkpoint.jsonl data/status_catalog_checkpoint_meta.json
+              echo "Removed completed checkpoint; scheduled runs must reclassify the live catalog"
+            fi
+          fi
+
       - name: Classify every catalog novel until complete
         working-directory: private-engine
         env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          CHECKPOINT_PUBLISH: "1"
           STATUS_RETRY_ROUND_DELAY: ${{ env.STATUS_RETRY_ROUND_DELAY }}
           STATUS_MAX_ROUNDS: ${{ env.STATUS_MAX_ROUNDS }}
         run: |
@@ -89,10 +102,12 @@ jobs:
             --workers "$STATUS_WORKERS" \
             --timeout "$STATUS_REQUEST_TIMEOUT" \
             --retries "$STATUS_RETRIES" \
-            --delay "$STATUS_DELAY_SECONDS" \
             --expected-count "$STATUS_EXPECTED_CATALOG_COUNT" \
             --retry-round-delay "$STATUS_RETRY_ROUND_DELAY" \
-            --max-rounds "$STATUS_MAX_ROUNDS"
+            --max-rounds "$STATUS_MAX_ROUNDS" \
+            --checkpoint-path data/status_catalog_checkpoint.jsonl \
+            --checkpoint-meta data/status_catalog_checkpoint_meta.json \
+            --checkpoint-every "$STATUS_CHECKPOINT_EVERY"
 
       - name: Validate final status catalogs
         working-directory: private-engine
@@ -153,7 +168,9 @@ jobs:
             private-engine/data/completed_novels.json
             private-engine/data/ongoing_novels.json
             private-engine/data/novel_status_catalog_report.json
+            private-engine/data/status_catalog_checkpoint.jsonl
+            private-engine/data/status_catalog_checkpoint_meta.json
           if-no-files-found: ignore
           retention-days: 30
 
-# run-now marker: protect-12418-and-isolate-failing-url
+# run-now marker: 384-workers-resumable-checkpoint
