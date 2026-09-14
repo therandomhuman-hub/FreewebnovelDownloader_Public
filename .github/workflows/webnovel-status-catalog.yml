@@ -12,12 +12,12 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
-  STATUS_WORKERS: "16"
+  STATUS_WORKERS: "4"
   STATUS_REQUEST_TIMEOUT: "30"
   STATUS_RETRIES: "3"
-  STATUS_DELAY_SECONDS: "0.08"
+  STATUS_DELAY_SECONDS: "0.50"
   STATUS_EXPECTED_CATALOG_COUNT: "12419"
-  STATUS_RETRY_ROUND_DELAY: "8"
+  STATUS_RETRY_ROUND_DELAY: "20"
   STATUS_MAX_ROUNDS: "0"
 
 concurrency:
@@ -40,7 +40,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: 3.12
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
 
@@ -156,4 +156,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-# run-now marker: retry-until-complete
+# run-now marker: retry-until-complete-low-concurrency
