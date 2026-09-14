@@ -22,7 +22,7 @@ env:
 
 concurrency:
   group: webnovel-status-catalog
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   classify:
@@ -186,4 +186,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-# run-now marker: bounded-retry-checkpoint-resume
+# run-now marker: bounded-retry-checkpoint-resume-cancel-old
