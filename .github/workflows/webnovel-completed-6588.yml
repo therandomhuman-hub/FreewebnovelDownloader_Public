@@ -72,6 +72,14 @@ jobs:
       - name: Run deterministic tests
         working-directory: private-engine
         run: python -m unittest discover -s tests -v
+      - name: Preflight Google Drive OAuth and folder access
+        working-directory: private-engine
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: python drive_oauth_healthcheck.py
       - name: Validate completed catalog
         working-directory: private-engine
         run: |
