@@ -213,7 +213,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           ref: ${{ needs.healthcheck.outputs.engine_sha }}
           path: private-engine
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -276,10 +276,12 @@ jobs:
           ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
         run: |
           set -euo pipefail
+          test -n "$PRIVATE_REPO_TOKEN"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_REPO_TOKEN" | base64 -w0)"
           for attempt in 1 2 3 4 5; do
-            git fetch --no-tags origin main
+            git -c http.https://github.com/.extraheader="$AUTH_HEADER" fetch --no-tags origin main
             git reset --hard origin/main
             mkdir -p data/bulk_runs
             jq -n \
@@ -293,7 +295,7 @@ jobs:
               exit 0
             fi
             git commit -m "Record completed 6588 bulk downloader run"
-            if git push origin HEAD:main; then
+            if git -c http.https://github.com/.extraheader="$AUTH_HEADER" push origin HEAD:main; then
               exit 0
             fi
           done
