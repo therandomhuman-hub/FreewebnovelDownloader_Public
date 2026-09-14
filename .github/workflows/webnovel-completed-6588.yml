@@ -71,9 +71,20 @@ jobs:
           set -euo pipefail
           test -s data/completed_novels.json
           jq -e '.count == 6588 and (.novels | length) == 6588' data/completed_novels.json >/dev/null
-          jq -e '([.novels[].url] | length) == (unique | length)' data/completed_novels.json >/dev/null
-          jq -e 'all(.novels[]; .effective_status == "completed")' data/completed_novels.json >/dev/null
-          jq -e 'all(.novels[]; (.url | startswith("https://freewebnovel.com/novel/")))' data/completed_novels.json >/dev/null
+          jq -e '
+          (.novels | map(.url) | length)
+          ==
+          (.novels | map(.url) | unique | length)
+          ' data/completed_novels.json >/dev/null
+          jq -e '
+          all(.novels[];
+            (.url | type == "string") and
+            ((.url | startswith("https://freewebnovel.com/novel/"))) and
+            (.effective_status | type == "string") and
+            (.effective_status == "completed") and
+            (.title | type == "string")
+          )
+          ' data/completed_novels.json >/dev/null
 
   shard:
     needs: healthcheck
@@ -168,6 +179,7 @@ jobs:
           path: |
             private-engine/worker_result.json
             private-engine/worker_execution_marker.json
+            private-engine/failed_novels.json
             private-engine/logs/**
           if-no-files-found: warn
           retention-days: 30
