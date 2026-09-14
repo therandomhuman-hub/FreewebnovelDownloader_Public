@@ -214,12 +214,18 @@ jobs:
           merge-multiple: false
       - name: Validate complete 6588-worker result set
         working-directory: private-engine
+        env:
+          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
         run: |
           set -euo pipefail
-          python bulk_validation.py "$GITHUB_WORKSPACE/results"
+          python bulk_validation.py "$GITHUB_WORKSPACE/results" --engine-sha "$ENGINE_SHA"
           jq -e '
-            .status == "validated"
+            .schema_version == 3
+            and .status == "validated"
             and .duplicates == 0
+            and .invalid_workers == 0
+            and .invalid_results == 0
+            and .invalid_markers == 0
           ' bulk_validation_report.json >/dev/null
       - name: Aggregate Google Drive / Sheet1 state
         working-directory: private-engine
