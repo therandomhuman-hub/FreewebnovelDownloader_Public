@@ -74,6 +74,18 @@ jobs:
           jq -e 'type == "array" and length == ($ENV.STATUS_EXPECTED_CATALOG_COUNT | tonumber) and length == (unique | length)' data/novel_links.json >/dev/null
           jq -e 'all(.[]; type == "string" and startswith("https://freewebnovel.com/novel/"))' data/novel_links.json >/dev/null
 
+      - name: Prepare resumable checkpoint publishing
+        working-directory: private-engine
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPO_TOKEN"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f data/status_catalog_checkpoint.jsonl data/status_catalog_checkpoint_meta.json || true
+          git reset -- data/status_catalog_checkpoint.jsonl data/status_catalog_checkpoint_meta.json || true
+
       - name: Reset completed checkpoint before a fresh catalog pass
         working-directory: private-engine
         run: |
@@ -90,6 +102,7 @@ jobs:
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           CHECKPOINT_PUBLISH: "1"
+          GIT_CHECKPOINT_FORCE_ADD: "1"
           STATUS_RETRY_ROUND_DELAY: ${{ env.STATUS_RETRY_ROUND_DELAY }}
           STATUS_MAX_ROUNDS: ${{ env.STATUS_MAX_ROUNDS }}
         run: |
@@ -173,4 +186,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-# run-now marker: 384-workers-resumable-checkpoint
+# run-now marker: force-checkpoint-add-and-resume
