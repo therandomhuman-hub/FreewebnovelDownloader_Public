@@ -24,6 +24,8 @@ concurrency:
   group: webnovel-completed-6588
   cancel-in-progress: false
 
+# Production trigger contract: commits containing [RUN-6588] execute the full catalog.
+
 env:
   PYTHON_VERSION: "3.12"
   BULK_SOURCE_FILE: "data/completed_novels.json"
