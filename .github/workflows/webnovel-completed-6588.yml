@@ -130,8 +130,8 @@ jobs:
           BULK_SHARD_COUNT: ${{ env.BULK_SHARD_COUNT }}
           BULK_RUN_INDEX: ${{ github.run_number }}
           BULK_SOURCE_FILE: ${{ env.BULK_SOURCE_FILE }}
-          BULK_CONCURRENCY_PER_SHARD: ${{ inputs.concurrency_per_shard }}
-          BULK_RETRY_ATTEMPTS: ${{ inputs.retry_attempts }}
+          BULK_CONCURRENCY_PER_SHARD: ${{ inputs.concurrency_per_shard || '8' }}
+          BULK_RETRY_ATTEMPTS: ${{ inputs.retry_attempts || '2' }}
           COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
           COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
