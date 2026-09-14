@@ -1,0 +1,248 @@
+name: WebNovel Downloader - Completed 6588 Bulk
+
+on:
+  workflow_dispatch:
+    inputs:
+      concurrency_per_shard:
+        description: "Concurrent one-novel workers per shard"
+        required: false
+        default: "8"
+        type: string
+      retry_attempts:
+        description: "Retries per novel after the initial attempt"
+        required: false
+        default: "2"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webnovel-completed-6588
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  BULK_SOURCE_FILE: "data/completed_novels.json"
+  BULK_SHARD_COUNT: "26"
+  COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
+  COMMUNITY_LIBRARY_POLL_SECONDS: "120"
+  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "600"
+  COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "60"
+  COMMUNITY_LIBRARY_RETRY_PASSES: "0"
+  GOOGLE_COMPLETED_SHEET: "Sheet1"
+  GOOGLE_ONGOING_SHEET: "Sheet2"
+  SHEETS_RETRY_ATTEMPTS: "7"
+  SHEETS_RETRY_BASE_SECONDS: "2"
+  SHEETS_RETRY_MAX_SECONDS: "30"
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      engine_sha: ${{ steps.engine.outputs.commit }}
+    steps:
+      - name: Checkout tested private engine
+        id: engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+      - name: Compile sources
+        working-directory: private-engine
+        run: python -m py_compile *.py tests/*.py
+      - name: Run deterministic tests
+        working-directory: private-engine
+        run: python -m unittest discover -s tests -v
+      - name: Validate completed catalog
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          test -s data/completed_novels.json
+          jq -e '.count == 6588 and (.novels | length) == 6588' data/completed_novels.json >/dev/null
+          jq -e '([.novels[].url] | length) == (unique | length)' data/completed_novels.json >/dev/null
+          jq -e 'all(.novels[]; .effective_status == "completed")' data/completed_novels.json >/dev/null
+          jq -e 'all(.novels[]; (.url | startswith("https://freewebnovel.com/novel/")))' data/completed_novels.json >/dev/null
+
+  shard:
+    needs: healthcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 26
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
+    steps:
+      - name: Checkout tested private engine revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ needs.healthcheck.outputs.engine_sha }}
+          path: private-engine
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+      - name: Run one logical worker per completed novel
+        working-directory: private-engine
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          BULK_SHARD_ID: ${{ matrix.shard }}
+          BULK_SHARD_COUNT: ${{ env.BULK_SHARD_COUNT }}
+          BULK_RUN_INDEX: ${{ github.run_number }}
+          BULK_SOURCE_FILE: ${{ env.BULK_SOURCE_FILE }}
+          BULK_CONCURRENCY_PER_SHARD: ${{ inputs.concurrency_per_shard }}
+          BULK_RETRY_ATTEMPTS: ${{ inputs.retry_attempts }}
+          COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
+          COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
+          COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
+          COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
+          COMMUNITY_LIBRARY_RETRY_PASSES: ${{ env.COMMUNITY_LIBRARY_RETRY_PASSES }}
+        run: |
+          set -euo pipefail
+          set +e
+          python bulk_completed_worker.py
+          rc=$?
+          set -e
+          test -s worker_result.json
+          jq empty worker_result.json
+          jq -e '.rows | arrays' worker_result.json >/dev/null
+          jq -e --argjson shard "$BULK_SHARD_ID" --argjson total "$BULK_SHARD_COUNT" '.workflow_id == $shard and .workflow_count == $total and .assigned == (.rows|length)' worker_result.json >/dev/null
+          exit "$rc"
+      - name: Write execution marker
+        if: always()
+        working-directory: private-engine
+        env:
+          SHARD_ID: ${{ matrix.shard }}
+          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
+          RUN_INDEX: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          if test -s worker_result.json && jq empty worker_result.json >/dev/null 2>&1; then
+            failed=$(jq -r '.counters.failed // 0' worker_result.json)
+            status=completed
+            result_sha256=$(sha256sum worker_result.json | awk '{print $1}')
+          else
+            failed=-1
+            status=process_failed
+            result_sha256=""
+          fi
+          jq -n \
+            --argjson shard "$SHARD_ID" \
+            --argjson run "$RUN_INDEX" \
+            --arg status "$status" \
+            --argjson failed "$failed" \
+            --arg engine_sha "$ENGINE_SHA" \
+            --arg result_sha256 "$result_sha256" \
+            '{schema_version:1,worker_id:$shard,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
+            > private-engine/worker_execution_marker.json
+      - name: Upload shard result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-bulk-shard-${{ matrix.shard }}
+          path: |
+            private-engine/worker_result.json
+            private-engine/worker_execution_marker.json
+            private-engine/logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  tracker:
+    needs: [healthcheck, shard]
+    if: ${{ always() && needs.healthcheck.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout tested private engine revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ needs.healthcheck.outputs.engine_sha }}
+          path: private-engine
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+      - name: Download all shard results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: webnovel-bulk-shard-*
+          path: results
+          merge-multiple: false
+      - name: Validate complete 6588-worker result set
+        env:
+          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t markers < <(find results -type f -name worker_execution_marker.json | sort)
+          test "${#markers[@]}" -eq 26
+          jq -s -e --arg sha "$ENGINE_SHA" 'length == 26 and ([.[].worker_id] | sort) == [range(0;26)] and all(.[]; .engine_sha == $sha)' "${markers[@]}" >/dev/null
+          mapfile -t results_files < <(find results -type f -name worker_result.json | sort)
+          test "${#results_files[@]}" -eq 26
+          jq -s -e 'map(.rows | length) | add == 6588' "${results_files[@]}" >/dev/null
+          jq -s -e 'map(.rows[] | .novel_url) | length == 6588 and (unique | length) == 6588' "${results_files[@]}" >/dev/null
+      - name: Aggregate Google Drive / Sheet1 state
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_COMPLETED_SHEET: ${{ env.GOOGLE_COMPLETED_SHEET }}
+          GOOGLE_ONGOING_SHEET: ${{ env.GOOGLE_ONGOING_SHEET }}
+          RUN_ID: ${{ github.run_id }}
+          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
+        run: |
+          set -euo pipefail
+          python sheet_aggregator.py "$GITHUB_WORKSPACE/results"
+      - name: Persist successful run report in private engine
+        if: always()
+        working-directory: private-engine
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p data/bulk_runs
+          jq -n \
+            --arg run_id "$RUN_ID" \
+            --arg engine_sha "${{ needs.healthcheck.outputs.engine_sha }}" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schema_version:1,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:"completed"}' \
+            > data/bulk_runs/latest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/bulk_runs/latest.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Record completed 6588 bulk downloader run"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPO_TOKEN}@github.com/therandomhuman-hub/FreewebnovelDownloader_Private.git"
+          git push origin HEAD:main
