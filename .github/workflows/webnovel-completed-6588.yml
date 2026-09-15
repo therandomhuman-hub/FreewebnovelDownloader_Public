@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 # Production trigger contract: commits containing [RUN-6588] execute the full catalog.
-# [RUN-6588] Verify Drive OAuth preflight gate.
+# [RUN-6588] Hardened engine production execution after passing private CI.
 
 env:
   PYTHON_VERSION: "3.12"
