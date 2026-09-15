@@ -6,7 +6,7 @@ on:
       concurrency_per_shard:
         description: "Concurrent one-novel workers per shard"
         required: false
-        default: "8"
+        default: "1"
         type: string
       retry_attempts:
         description: "Retries per novel after the initial attempt"
@@ -22,10 +22,10 @@ permissions:
 
 concurrency:
   group: webnovel-completed-6588
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 # Production trigger contract: commits containing [RUN-6588] execute the full catalog.
-# [RUN-6588] Hardened engine production execution after passing private CI.
+# [RUN-6588] Dynamic conversion-page monitoring; one active conversion worker per shard by default.
 
 env:
   PYTHON_VERSION: "3.12"
@@ -104,7 +104,7 @@ jobs:
   shard:
     needs: healthcheck
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 1440
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -141,7 +141,7 @@ jobs:
           BULK_SHARD_COUNT: ${{ env.BULK_SHARD_COUNT }}
           BULK_RUN_INDEX: ${{ github.run_number }}
           BULK_SOURCE_FILE: ${{ env.BULK_SOURCE_FILE }}
-          BULK_CONCURRENCY_PER_SHARD: ${{ inputs.concurrency_per_shard || '8' }}
+          BULK_CONCURRENCY_PER_SHARD: ${{ inputs.concurrency_per_shard || '1' }}
           BULK_RETRY_ATTEMPTS: ${{ inputs.retry_attempts || '2' }}
           COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
           COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
