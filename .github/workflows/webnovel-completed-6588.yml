@@ -13,6 +13,8 @@ on:
         required: false
         default: "2"
         type: string
+  schedule:
+    - cron: "0 * * * *"
   push:
     branches:
       - main
@@ -25,18 +27,21 @@ concurrency:
   cancel-in-progress: true
 
 # Production trigger contract: commits containing [RUN-6588] execute the full catalog.
-# [RUN-6588] Dynamic conversion-page monitoring; one active conversion worker per shard by default.
-# [RUN-6588] Trigger hardened production execution.
+# Scheduled runs are resumable passes: successful Drive files are skipped and remaining catalog rows continue.
 
 env:
   PYTHON_VERSION: "3.12"
   BULK_SOURCE_FILE: "data/completed_novels.json"
   BULK_SHARD_COUNT: "26"
+  BULK_MAX_RUN_SECONDS: "19800"
+  BULK_RUN_STOP_MARGIN_SECONDS: "1200"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
   COMMUNITY_LIBRARY_POLL_SECONDS: "120"
   COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "600"
   COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "60"
   COMMUNITY_LIBRARY_RETRY_PASSES: "0"
+  COMMUNITY_CONVERSION_POLL_SECONDS: "5"
+  COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS: "20"
   GOOGLE_COMPLETED_SHEET: "Sheet1"
   GOOGLE_ONGOING_SHEET: "Sheet2"
   SHEETS_RETRY_ATTEMPTS: "7"
@@ -45,7 +50,7 @@ env:
 
 jobs:
   healthcheck:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[RUN-6588]')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[RUN-6588]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -93,11 +98,11 @@ jobs:
   shard:
     needs: healthcheck
     runs-on: ubuntu-latest
-    timeout-minutes: 1440
+    timeout-minutes: 350
     continue-on-error: true
     strategy:
       fail-fast: false
-      max-parallel: 26
+      max-parallel: 3
       matrix:
         shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
     steps:
@@ -117,7 +122,7 @@ jobs:
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-      - name: Run one logical worker per completed novel
+      - name: Run resumable logical workers
         working-directory: private-engine
         env:
           GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
@@ -132,11 +137,15 @@ jobs:
           BULK_SOURCE_FILE: ${{ env.BULK_SOURCE_FILE }}
           BULK_CONCURRENCY_PER_SHARD: ${{ inputs.concurrency_per_shard || '1' }}
           BULK_RETRY_ATTEMPTS: ${{ inputs.retry_attempts || '2' }}
+          BULK_MAX_RUN_SECONDS: ${{ env.BULK_MAX_RUN_SECONDS }}
+          BULK_RUN_STOP_MARGIN_SECONDS: ${{ env.BULK_RUN_STOP_MARGIN_SECONDS }}
           COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
           COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
           COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
           COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
           COMMUNITY_LIBRARY_RETRY_PASSES: ${{ env.COMMUNITY_LIBRARY_RETRY_PASSES }}
+          COMMUNITY_CONVERSION_POLL_SECONDS: ${{ env.COMMUNITY_CONVERSION_POLL_SECONDS }}
+          COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS: ${{ env.COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS }}
         run: |
           set -euo pipefail
           set +e
@@ -209,7 +218,7 @@ jobs:
           pattern: webnovel-bulk-shard-*
           path: results
           merge-multiple: false
-      - name: Validate complete 6588-worker result set
+      - name: Validate resumable 6588-worker result set
         working-directory: private-engine
         env:
           ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
@@ -225,7 +234,7 @@ jobs:
           path: private-engine/bulk_validation_report.json
           if-no-files-found: warn
           retention-days: 30
-      - name: Aggregate Google Drive / Sheet1 state
+      - name: Aggregate cumulative Google Drive / Sheet state
         working-directory: private-engine
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -237,7 +246,9 @@ jobs:
         run: |
           set -euo pipefail
           python sheet_aggregator.py "$GITHUB_WORKSPACE/results"
-      - name: Persist successful run report in private engine
+          test -s tracker_summary.json
+          jq -e '.total_tracked <= 6588 and .completed_sheet_rows <= 6588 and .ongoing_sheet_rows <= 6588' tracker_summary.json >/dev/null
+      - name: Persist cumulative run report
         if: ${{ success() }}
         working-directory: private-engine
         env:
@@ -254,11 +265,19 @@ jobs:
             git -c http.https://github.com/.extraheader="$AUTH_HEADER" fetch --no-tags origin main
             git reset --hard origin/main
             mkdir -p data/bulk_runs
-            jq -n --arg run_id "$RUN_ID" --arg engine_sha "$ENGINE_SHA" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{schema_version:1,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:"completed"}' > data/bulk_runs/latest.json
+            jq -n \
+              --arg run_id "$RUN_ID" \
+              --arg engine_sha "$ENGINE_SHA" \
+              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --argjson tracked "$(jq -r '.total_tracked // 0' tracker_summary.json)" \
+              --argjson completed "$(jq -r '.completed_sheet_rows // 0' tracker_summary.json)" \
+              --argjson ongoing "$(jq -r '.ongoing_sheet_rows // 0' tracker_summary.json)" \
+              '{schema_version:2,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:(if $completed == 6588 then "completed" else "in_progress" end),total_tracked:$tracked,completed:$completed,ongoing:$ongoing}' \
+              > data/bulk_runs/latest.json
             git add data/bulk_runs/latest.json
             if git diff --cached --quiet; then exit 0; fi
-            git commit -m "Record completed 6588 bulk downloader run"
+            git commit -m "Record resumable 6588 bulk progress"
             if git -c http.https://github.com/.extraheader="$AUTH_HEADER" push origin HEAD:main; then exit 0; fi
           done
-          echo "Failed to persist bulk run report after retries" >&2
+          echo "Failed to persist resumable bulk progress after retries" >&2
           exit 1
