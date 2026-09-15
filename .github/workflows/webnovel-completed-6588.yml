@@ -24,10 +24,11 @@ permissions:
 
 concurrency:
   group: webnovel-completed-6588
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # Production trigger contract: commits containing [RUN-6588] execute the full catalog.
 # Scheduled runs are resumable passes: successful Drive files are skipped and remaining catalog rows continue.
+# The active run is never interrupted; a later scheduled pass queues behind it and resumes remaining work.
 
 env:
   PYTHON_VERSION: "3.12"
