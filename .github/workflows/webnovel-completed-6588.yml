@@ -26,6 +26,7 @@ concurrency:
 
 # Production trigger contract: commits containing [RUN-6588] execute the full catalog.
 # [RUN-6588] Dynamic conversion-page monitoring; one active conversion worker per shard by default.
+# [RUN-6588] Trigger hardened production execution.
 
 env:
   PYTHON_VERSION: "3.12"
@@ -86,20 +87,8 @@ jobs:
           set -euo pipefail
           test -s data/completed_novels.json
           jq -e '.count == 6588 and (.novels | length) == 6588' data/completed_novels.json >/dev/null
-          jq -e '
-          (.novels | map(.url) | length)
-          ==
-          (.novels | map(.url) | unique | length)
-          ' data/completed_novels.json >/dev/null
-          jq -e '
-          all(.novels[];
-            (.url | type == "string") and
-            ((.url | startswith("https://freewebnovel.com/novel/"))) and
-            (.effective_status | type == "string") and
-            (.effective_status == "completed") and
-            (.title | type == "string")
-          )
-          ' data/completed_novels.json >/dev/null
+          jq -e '(.novels | map(.url) | length) == (.novels | map(.url) | unique | length)' data/completed_novels.json >/dev/null
+          jq -e 'all(.novels[]; (.url | type == "string") and ((.url | startswith("https://freewebnovel.com/novel/"))) and (.effective_status | type == "string") and (.effective_status == "completed") and (.title | type == "string"))' data/completed_novels.json >/dev/null
 
   shard:
     needs: healthcheck
@@ -177,15 +166,7 @@ jobs:
             status=process_failed
             result_sha256=""
           fi
-          jq -n \
-            --argjson shard "$SHARD_ID" \
-            --argjson run "$RUN_INDEX" \
-            --arg status "$status" \
-            --argjson failed "$failed" \
-            --arg engine_sha "$ENGINE_SHA" \
-            --arg result_sha256 "$result_sha256" \
-            '{schema_version:1,worker_id:$shard,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
-            > worker_execution_marker.json
+          jq -n --argjson shard "$SHARD_ID" --argjson run "$RUN_INDEX" --arg status "$status" --argjson failed "$failed" --arg engine_sha "$ENGINE_SHA" --arg result_sha256 "$result_sha256" '{schema_version:1,worker_id:$shard,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' > worker_execution_marker.json
           test -s worker_execution_marker.json
       - name: Upload shard result
         if: always()
@@ -235,18 +216,7 @@ jobs:
         run: |
           set -euo pipefail
           python bulk_validation.py "$GITHUB_WORKSPACE/results" --engine-sha "$ENGINE_SHA"
-          jq -e '
-            .schema_version == 4
-            and .status == "validated"
-            and .duplicates == 0
-            and .invalid_workers == 0
-            and .invalid_results == 0
-            and .invalid_markers == 0
-            and .invalid_failures == 0
-            and .worker_files == 26
-            and .marker_files == 26
-            and .failure_files == 26
-          ' bulk_validation_report.json >/dev/null
+          jq -e '.schema_version == 4 and .status == "validated" and .duplicates == 0 and .invalid_workers == 0 and .invalid_results == 0 and .invalid_markers == 0 and .invalid_failures == 0 and .worker_files == 26 and .marker_files == 26 and .failure_files == 26' bulk_validation_report.json >/dev/null
       - name: Upload bulk validation report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -284,20 +254,11 @@ jobs:
             git -c http.https://github.com/.extraheader="$AUTH_HEADER" fetch --no-tags origin main
             git reset --hard origin/main
             mkdir -p data/bulk_runs
-            jq -n \
-              --arg run_id "$RUN_ID" \
-              --arg engine_sha "$ENGINE_SHA" \
-              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              '{schema_version:1,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:"completed"}' \
-              > data/bulk_runs/latest.json
+            jq -n --arg run_id "$RUN_ID" --arg engine_sha "$ENGINE_SHA" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{schema_version:1,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:"completed"}' > data/bulk_runs/latest.json
             git add data/bulk_runs/latest.json
-            if git diff --cached --quiet; then
-              exit 0
-            fi
+            if git diff --cached --quiet; then exit 0; fi
             git commit -m "Record completed 6588 bulk downloader run"
-            if git -c http.https://github.com/.extraheader="$AUTH_HEADER" push origin HEAD:main; then
-              exit 0
-            fi
+            if git -c http.https://github.com/.extraheader="$AUTH_HEADER" push origin HEAD:main; then exit 0; fi
           done
           echo "Failed to persist bulk run report after retries" >&2
           exit 1
