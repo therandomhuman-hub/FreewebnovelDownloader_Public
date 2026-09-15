@@ -1,81 +1,66 @@
-# FreeWebNovel Downloader — Public Scheduler
+# FreeWebNovel Downloader — Production Orchestrator
 
-Production orchestration for the FreeWebNovel downloader. The public repository contains GitHub Actions, scheduler state, recovery workflows, discovery orchestration, and the Pages site. The private repository contains the downloader runtime and catalog.
+The public repository contains the production GitHub Actions orchestration and the small GitHub Pages site. The private repository contains the downloader engine, tests, and the authoritative completed-novel catalog.
 
-## Architecture
+## Production architecture
 
 ```text
-FreeWebNovel
-    │
-    ▼
-Recursive discovery ──► canonical novel catalog
-    │
-    ▼
-20 deterministic workers
-    │
-    ├── Completed ──► Community Library
-    │                    │
-    │                    ├── submit ALL eligible novels
-    │                    └── watch ALL submitted novels concurrently
-    │                                      │
-    │                                      ▼
-    │                                Google Drive ──► Sheet1
-    │
-    └── Ongoing / unknown / failed ───────────────────► Sheet2
-                                                        │
-                                                        ▼
-                                                 monthly recheck
+completed_novels.json (6,588 completed novels)
+                │
+                ▼
+      26 deterministic shards
+                │
+        max 3 shards at once
+                │
+      1 novel conversion/shard
+                │
+                ▼
+        LinkToEPUB conversion
+                │
+                ▼
+      dynamic progress watcher
+                │
+                ▼
+       verified EPUB download
+                │
+                ▼
+          Google Drive
+                │
+                ▼
+       Google Sheets tracker
+          ┌─────┴─────┐
+          ▼           ▼
+        Sheet1      Sheet2
+       completed   retryable/unresolved
 ```
 
 ## Production guarantees
 
-- **Gap-free scheduling:** persistent `run_index` partitions the catalog; a failed scheduled run is not silently skipped.
-- **Immutable provenance:** every scheduled run records the exact private-engine commit, public commit, run ID, worker count, and scheduling parameters.
-- **Deterministic workers:** every worker receives the exact private-engine revision tested by the health check.
-- **Two-phase Community Library processing:** all eligible submissions are completed before any watcher starts; all submitted conversions are then watched concurrently with isolated browser/download sessions.
-- **No conversion timeout:** the application does not abandon a submitted Community Library conversion because it is slow; only infrastructure/job termination can stop a run.
-- **Strict result selection:** production watchers require exact normalized Community Library title/source-title/slug equality rather than unsafe short-title substring matches.
-- **Fail-closed Drive idempotency:** the exact source URL is the archive identity. A Drive provenance lookup failure blocks generation rather than assuming the file is absent.
-- **Fail-closed tracking:** scheduler state advances only after all expected worker results are present, valid, integrity-checked, and successfully reconciled to Google Sheets.
-- **Worker isolation:** process-level worker failures block reconciliation; per-novel failures remain retryable in Sheet2.
-- **Safe recovery:** historical reconciliation uses the run's recorded engine revision and never advances scheduler state.
-- **Serialized Sheet mutations:** production, recovery, reconciliation, and replay workflows share the same concurrency lock.
-- **Discovery safety:** a partial or error-producing crawl cannot replace the known-good catalog.
-- **Action integrity:** GitHub Actions are pinned to immutable commit SHAs.
+- **Single production path:** `webnovel-completed-6588.yml` is the only downloader workflow.
+- **Resumable execution:** each shard stops admitting new novels before the GitHub Actions time limit, writes its partial checkpoint, and later scheduled passes continue from the remaining catalog.
+- **Hourly continuation:** the production workflow runs hourly until Sheet1 contains all 6,588 completed novels.
+- **No conversion timeout:** LinkToEPUB conversion watching is state-driven and continues until the page reports success or a real conversion failure occurs.
+- **Drive idempotency:** source URL provenance is used to detect an existing EPUB before generation, so later passes do not regenerate completed novels.
+- **Row-level retryability:** individual failures remain retryable and do not terminate the catalog-wide process.
+- **Deterministic engine pinning:** the public healthcheck tests the private engine first; every shard then uses the exact tested commit.
+- **Fail-safe tracking:** worker artifacts, execution markers, failure artifacts, duplicate URLs, and engine provenance are validated before tracker aggregation.
+- **Google Sheets integrity:** the tracker merges existing state with incoming results and verifies the written tabs after every pass.
+- **Immutable action references:** GitHub Actions are pinned to commit SHAs.
 
 ## Workflows
 
 | Workflow | Purpose |
 |---|---|
-| `webnovel.yml` | Scheduled production download pipeline |
-| `webnovel-discovery-primary.yml` | Recursive catalog discovery |
-| `monthly-ongoing-recheck.yml` | Month-end recheck of Sheet2 |
-| `webnovel-tracker-reconcile.yml` | Manual reconciliation of a historical run |
-| `webnovel-tracker-recovery.yml` | Historical tracker recovery without scheduler advancement |
-| `webnovel-tracker-sheet-replay.yml` | Historical Sheet replay without scheduler advancement |
-| `production-audit.yml` | Automated production-readiness checks |
-| `deploy-pages.yml` | GitHub Pages deployment |
+| `webnovel-completed-6588.yml` | Production downloader, resumable hourly continuation, tracker, and progress persistence |
+| `deploy-pages.yml` | GitHub Pages deployment for the public site |
 
-## Scheduling
+All discovery, monthly recheck, legacy pipeline, tracker replay/recovery, and redundant audit workflows have been retired from the public project.
 
-The production downloader runs four times per day with 20 workers. Each worker processes two batches of five URLs, for a maximum of 200 URL checks per scheduled run. The scheduler uses the current catalog length, so it does not depend on a hard-coded catalog size.
+## Execution model
 
-Manual workflow runs are operational tests only. They never advance production scheduler state. Real manual E2E runs use the same production concurrency lock as scheduled processing.
+Each production shard has a hard ceiling below GitHub's six-hour job limit. The worker reserves a safety margin, finishes active novels, writes what it has completed, and exits cleanly. A future scheduled pass sees the same 6,588-row catalog, skips novels already confirmed in Drive, and continues unresolved work.
 
-## Discovery
-
-The primary discovery workflow starts from the configured FreeWebNovel roots and recursively follows reachable same-site pages to collect canonical `/novel/...` URLs. Discovery state is checkpointed remotely for production continuity. The master catalog is replaced only after the crawl reports complete with zero errors.
-
-Discovery failures are deliberately independent from downloader worker failures: a discovery problem must not silently alter or skip the downloader schedule.
-
-## Tracking
-
-Google Sheets uses two tabs:
-
-- **Sheet1:** novels confirmed completed and successfully stored in Google Drive.
-- **Sheet2:** ongoing, unknown, metadata-error, or download-failure rows awaiting later processing.
-
-Only the tracker job writes the production Sheets. Workers publish result artifacts and execution markers. Manual Sheet reconciliation/replay operations are serialized against production Sheet writes.
+The production run is considered fully complete only when the tracker reports 6,588 completed Sheet1 rows. Until then, the system remains resumable and continues on later passes.
 
 ## Required secrets
 
@@ -89,7 +74,7 @@ Configure these as GitHub Actions Secrets:
 - `GOOGLE_DRIVE_REFRESH_TOKEN`
 - `GOOGLE_DRIVE_FOLDER_ID`
 
-Never commit credentials or generated runtime state to the repository.
+Never commit credentials or runtime artifacts containing secrets.
 
 ## Legal / responsible use
 
