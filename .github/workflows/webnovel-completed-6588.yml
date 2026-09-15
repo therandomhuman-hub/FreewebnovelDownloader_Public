@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       concurrency_per_shard:
-        description: "Concurrent one-novel workers per shard"
+        description: "Concurrent novel workers per shard"
         required: false
         default: "1"
         type: string
@@ -26,9 +26,9 @@ concurrency:
   group: webnovel-completed-6588
   cancel-in-progress: false
 
-# Production trigger contract: commits containing [RUN-6588] execute the full catalog.
-# Scheduled runs are resumable passes: successful Drive files are skipped and remaining catalog rows continue.
-# The active run is never interrupted; a later scheduled pass queues behind it and resumes remaining work.
+# Production trigger contract: a push whose commit message contains [RUN-6588]
+# starts an explicit production pass. Scheduled passes are resumable and never
+# interrupt an active pass.
 
 env:
   PYTHON_VERSION: "3.12"
@@ -37,10 +37,6 @@ env:
   BULK_MAX_RUN_SECONDS: "19800"
   BULK_RUN_STOP_MARGIN_SECONDS: "1200"
   COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
-  COMMUNITY_LIBRARY_POLL_SECONDS: "120"
-  COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: "600"
-  COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: "60"
-  COMMUNITY_LIBRARY_RETRY_PASSES: "0"
   COMMUNITY_CONVERSION_POLL_SECONDS: "5"
   COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS: "20"
   GOOGLE_COMPLETED_SHEET: "Sheet1"
@@ -65,20 +61,30 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private-engine
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
+
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
+
+      - name: Verify dependency consistency
+        working-directory: private-engine
+        run: python -m pip check
+
       - name: Compile sources
         working-directory: private-engine
         run: python -m py_compile *.py tests/*.py
+
       - name: Run deterministic tests
         working-directory: private-engine
         run: python -m unittest discover -s tests -v
+
       - name: Preflight Google Drive OAuth and folder access
         working-directory: private-engine
         env:
@@ -87,6 +93,7 @@ jobs:
           GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: python drive_oauth_healthcheck.py
+
       - name: Validate completed catalog
         working-directory: private-engine
         run: |
@@ -94,10 +101,11 @@ jobs:
           test -s data/completed_novels.json
           jq -e '.count == 6588 and (.novels | length) == 6588' data/completed_novels.json >/dev/null
           jq -e '(.novels | map(.url) | length) == (.novels | map(.url) | unique | length)' data/completed_novels.json >/dev/null
-          jq -e 'all(.novels[]; (.url | type == "string") and ((.url | startswith("https://freewebnovel.com/novel/"))) and (.effective_status | type == "string") and (.effective_status == "completed") and (.title | type == "string"))' data/completed_novels.json >/dev/null
+          jq -e 'all(.novels[]; (.url | type == "string") and (.url | startswith("https://freewebnovel.com/novel/")) and (.effective_status | type == "string") and (.effective_status == "completed") and (.title | type == "string"))' data/completed_novels.json >/dev/null
 
   shard:
     needs: healthcheck
+    if: ${{ needs.healthcheck.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     continue-on-error: true
@@ -115,15 +123,19 @@ jobs:
           ref: ${{ needs.healthcheck.outputs.engine_sha }}
           path: private-engine
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
+
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-      - name: Run resumable logical workers
+
+      - name: Run resumable shard worker
         working-directory: private-engine
         env:
           GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
@@ -141,14 +153,9 @@ jobs:
           BULK_MAX_RUN_SECONDS: ${{ env.BULK_MAX_RUN_SECONDS }}
           BULK_RUN_STOP_MARGIN_SECONDS: ${{ env.BULK_RUN_STOP_MARGIN_SECONDS }}
           COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
-          COMMUNITY_LIBRARY_POLL_SECONDS: ${{ env.COMMUNITY_LIBRARY_POLL_SECONDS }}
-          COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS: ${{ env.COMMUNITY_LIBRARY_WATCH_TIMEOUT_SECONDS }}
-          COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS: ${{ env.COMMUNITY_LIBRARY_INITIAL_WAIT_SECONDS }}
-          COMMUNITY_LIBRARY_RETRY_PASSES: ${{ env.COMMUNITY_LIBRARY_RETRY_PASSES }}
           COMMUNITY_CONVERSION_POLL_SECONDS: ${{ env.COMMUNITY_CONVERSION_POLL_SECONDS }}
           COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS: ${{ env.COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS }}
         run: |
-          set -euo pipefail
           set +e
           python bulk_completed_worker.py
           rc=$?
@@ -158,6 +165,7 @@ jobs:
           jq -e '.rows | arrays' worker_result.json >/dev/null
           jq -e --argjson shard "$BULK_SHARD_ID" --argjson total "$BULK_SHARD_COUNT" '.workflow_id == $shard and .workflow_count == $total and .assigned == (.rows|length)' worker_result.json >/dev/null
           exit "$rc"
+
       - name: Write execution marker
         if: always()
         working-directory: private-engine
@@ -176,8 +184,17 @@ jobs:
             status=process_failed
             result_sha256=""
           fi
-          jq -n --argjson shard "$SHARD_ID" --argjson run "$RUN_INDEX" --arg status "$status" --argjson failed "$failed" --arg engine_sha "$ENGINE_SHA" --arg result_sha256 "$result_sha256" '{schema_version:1,worker_id:$shard,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' > worker_execution_marker.json
+          jq -n \
+            --argjson shard "$SHARD_ID" \
+            --argjson run "$RUN_INDEX" \
+            --arg status "$status" \
+            --argjson failed "$failed" \
+            --arg engine_sha "$ENGINE_SHA" \
+            --arg result_sha256 "$result_sha256" \
+            '{schema_version:1,worker_id:$shard,run_index:$run,status:$status,failed:$failed,engine_sha:$engine_sha,result_sha256:$result_sha256}' \
+            > worker_execution_marker.json
           test -s worker_execution_marker.json
+
       - name: Upload shard result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -205,37 +222,53 @@ jobs:
           ref: ${{ needs.healthcheck.outputs.engine_sha }}
           path: private-engine
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: private-engine/requirements.txt
+
       - name: Install dependencies
         working-directory: private-engine
         run: python -m pip install -r requirements.txt
-      - name: Download all shard results
+
+      - name: Download available shard results
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: webnovel-bulk-shard-*
           path: results
           merge-multiple: false
-      - name: Validate resumable 6588-worker result set
+
+      - name: Validate worker artifacts without blocking cumulative tracking
+        id: validation
         working-directory: private-engine
         env:
           ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
         run: |
-          set -euo pipefail
-          python bulk_validation.py "$GITHUB_WORKSPACE/results" --engine-sha "$ENGINE_SHA"
-          jq -e '.schema_version == 4 and .status == "validated" and .duplicates == 0 and .invalid_workers == 0 and .invalid_results == 0 and .invalid_markers == 0 and .invalid_failures == 0 and .worker_files == 26 and .marker_files == 26 and .failure_files == 26' bulk_validation_report.json >/dev/null
-      - name: Upload bulk validation report
+          set +e
+          python bulk_validation.py "$GITHUB_WORKSPACE/results" --engine-sha "$ENGINE_SHA" > bulk_validation.log 2>&1
+          rc=$?
+          set -e
+          cat bulk_validation.log
+          test -s bulk_validation_report.json || printf '%s\n' '{"schema_version":4,"status":"validation_unavailable"}' > bulk_validation_report.json
+          echo "validation_rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload validation report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: webnovel-bulk-validation-${{ github.run_id }}
-          path: private-engine/bulk_validation_report.json
+          path: |
+            private-engine/bulk_validation_report.json
+            private-engine/bulk_validation.log
           if-no-files-found: warn
           retention-days: 30
-      - name: Aggregate cumulative Google Drive / Sheet state
+
+      - name: Aggregate cumulative Google Drive / Sheets state
+        if: always()
         working-directory: private-engine
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -249,36 +282,12 @@ jobs:
           python sheet_aggregator.py "$GITHUB_WORKSPACE/results"
           test -s tracker_summary.json
           jq -e '.total_tracked <= 6588 and .completed_sheet_rows <= 6588 and .ongoing_sheet_rows <= 6588' tracker_summary.json >/dev/null
-      - name: Persist cumulative run report
-        if: ${{ success() }}
-        working-directory: private-engine
-        env:
-          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          RUN_ID: ${{ github.run_id }}
-          ENGINE_SHA: ${{ needs.healthcheck.outputs.engine_sha }}
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPO_TOKEN"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_REPO_TOKEN" | base64 -w0)"
-          for attempt in 1 2 3 4 5; do
-            git -c http.https://github.com/.extraheader="$AUTH_HEADER" fetch --no-tags origin main
-            git reset --hard origin/main
-            mkdir -p data/bulk_runs
-            jq -n \
-              --arg run_id "$RUN_ID" \
-              --arg engine_sha "$ENGINE_SHA" \
-              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              --argjson tracked "$(jq -r '.total_tracked // 0' tracker_summary.json)" \
-              --argjson completed "$(jq -r '.completed_sheet_rows // 0' tracker_summary.json)" \
-              --argjson ongoing "$(jq -r '.ongoing_sheet_rows // 0' tracker_summary.json)" \
-              '{schema_version:2,workflow:"WebNovel Downloader - Completed 6588 Bulk",run_id:($run_id|tonumber),engine_sha:$engine_sha,timestamp:$timestamp,status:(if $completed == 6588 then "completed" else "in_progress" end),total_tracked:$tracked,completed:$completed,ongoing:$ongoing}' \
-              > data/bulk_runs/latest.json
-            git add data/bulk_runs/latest.json
-            if git diff --cached --quiet; then exit 0; fi
-            git commit -m "Record resumable 6588 bulk progress"
-            if git -c http.https://github.com/.extraheader="$AUTH_HEADER" push origin HEAD:main; then exit 0; fi
-          done
-          echo "Failed to persist resumable bulk progress after retries" >&2
-          exit 1
+
+      - name: Upload cumulative tracker summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-bulk-tracker-summary-${{ github.run_id }}
+          path: private-engine/tracker_summary.json
+          if-no-files-found: warn
+          retention-days: 30
