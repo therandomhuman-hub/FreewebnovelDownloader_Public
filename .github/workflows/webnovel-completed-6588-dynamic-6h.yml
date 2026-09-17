@@ -1,0 +1,175 @@
+name: WebNovel Downloader - Completed 6588 Dynamic 6H
+
+on:
+  workflow_dispatch:
+    inputs:
+      concurrency:
+        description: "Maximum simultaneous novel workers"
+        required: false
+        default: "12"
+        type: string
+      retry_attempts:
+        description: "Retries per novel after the initial attempt"
+        required: false
+        default: "2"
+        type: string
+  schedule:
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webnovel-completed-6588-dynamic-6h
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  BULK_SOURCE_FILE: "data/completed_novels.json"
+  BULK_MAX_RUN_SECONDS: "19800"
+  BULK_RUN_STOP_MARGIN_SECONDS: "300"
+  BULK_CONCURRENCY: "12"
+  BULK_RETRY_ATTEMPTS: "2"
+  GOOGLE_COMPLETED_SHEET: "Sheet1"
+  GOOGLE_ONGOING_SHEET: "Sheet2"
+  SHEETS_RETRY_ATTEMPTS: "7"
+  SHEETS_RETRY_BASE_SECONDS: "2"
+  SHEETS_RETRY_MAX_SECONDS: "30"
+  COMMUNITY_LIBRARY_URL: "https://linktoepub.com/"
+  COMMUNITY_CONVERSION_POLL_SECONDS: "5"
+  COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS: "20"
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      engine_sha: ${{ steps.engine.outputs.commit }}
+    steps:
+      - name: Checkout tested private engine
+        id: engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Verify dependency consistency
+        working-directory: private-engine
+        run: python -m pip check
+
+      - name: Compile sources
+        working-directory: private-engine
+        run: python -m py_compile *.py tests/*.py
+
+      - name: Run deterministic tests
+        working-directory: private-engine
+        run: python -m unittest discover -s tests -v
+
+      - name: Preflight Google Drive OAuth and folder access
+        working-directory: private-engine
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: python drive_oauth_healthcheck.py
+
+      - name: Validate completed catalog
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          test -s data/completed_novels.json
+          jq -e '.count == 6588 and (.novels | length) == 6588' data/completed_novels.json >/dev/null
+          jq -e '(.novels | map(.url) | length) == (.novels | map(.url) | unique | length)' data/completed_novels.json >/dev/null
+          jq -e 'all(.novels[]; (.url | type == "string") and (.url | startswith("https://freewebnovel.com/novel/")) and (.effective_status | type == "string") and (.effective_status == "completed") and (.title | type == "string"))' data/completed_novels.json >/dev/null
+
+  worker:
+    needs: healthcheck
+    if: ${{ needs.healthcheck.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout tested private engine revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: therandomhuman-hub/FreewebnovelDownloader_Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: ${{ needs.healthcheck.outputs.engine_sha }}
+          path: private-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: private-engine/requirements.txt
+
+      - name: Install dependencies
+        working-directory: private-engine
+        run: python -m pip install -r requirements.txt
+
+      - name: Initialize live tracker state
+        working-directory: private-engine
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: |
+          python dynamic_6588_tracker.py init \
+            --catalog "$BULK_SOURCE_FILE" \
+            --run-id "$GITHUB_RUN_ID" \
+            --engine-sha "${{ needs.healthcheck.outputs.engine_sha }}"
+
+      - name: Run dynamic six-hour queue
+        working-directory: private-engine
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          BULK_SOURCE_FILE: ${{ env.BULK_SOURCE_FILE }}
+          BULK_MAX_RUN_SECONDS: ${{ env.BULK_MAX_RUN_SECONDS }}
+          BULK_RUN_STOP_MARGIN_SECONDS: ${{ env.BULK_RUN_STOP_MARGIN_SECONDS }}
+          BULK_CONCURRENCY: ${{ inputs.concurrency || env.BULK_CONCURRENCY }}
+          BULK_RETRY_ATTEMPTS: ${{ inputs.retry_attempts || env.BULK_RETRY_ATTEMPTS }}
+          BULK_RUN_INDEX: ${{ github.run_number }}
+          COMMUNITY_LIBRARY_URL: ${{ env.COMMUNITY_LIBRARY_URL }}
+          COMMUNITY_CONVERSION_POLL_SECONDS: ${{ env.COMMUNITY_CONVERSION_POLL_SECONDS }}
+          COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS: ${{ env.COMMUNITY_CONVERSION_DIAGNOSTIC_SECONDS }}
+        run: |
+          set +e
+          python dynamic_6588_worker.py
+          rc=$?
+          set -e
+          test -s dynamic_run_summary.json
+          jq empty dynamic_run_summary.json
+          cat dynamic_run_summary.json
+          exit "$rc"
+
+      - name: Upload live run diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: webnovel-6588-dynamic-${{ github.run_id }}
+          path: |
+            private-engine/dynamic_run_summary.json
+            private-engine/dynamic_tracker_snapshot.json
+            private-engine/failed_novels.json
+            private-engine/logs/**
+          if-no-files-found: warn
+          retention-days: 30
