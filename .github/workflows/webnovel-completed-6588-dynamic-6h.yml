@@ -8,7 +8,7 @@ on:
       concurrency:
         description: "Maximum simultaneous novel workers"
         required: false
-        default: "12"
+        default: "8"
         type: string
       retry_attempts:
         description: "Retries per novel after the initial attempt"
@@ -30,7 +30,7 @@ env:
   BULK_SOURCE_FILE: "data/completed_novels.json"
   BULK_MAX_RUN_SECONDS: "21600"
   BULK_RUN_STOP_MARGIN_SECONDS: "1800"
-  BULK_CONCURRENCY: "12"
+  BULK_CONCURRENCY: "8"
   BULK_RETRY_ATTEMPTS: "2"
   GOOGLE_COMPLETED_SHEET: "Sheet1"
   GOOGLE_ONGOING_SHEET: "Sheet2"
