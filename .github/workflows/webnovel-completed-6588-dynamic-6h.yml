@@ -101,7 +101,7 @@ jobs:
     needs: healthcheck
     if: ${{ needs.healthcheck.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 390
     steps:
       - name: Checkout tested private engine revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
