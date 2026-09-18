@@ -1,4 +1,5 @@
 name: WebNovel Downloader - Completed 6588 Dynamic 6H
+# Production run restarted after validated private-engine revision 4974c86eb5dd94235bbd0bf10126f24d2b5bb060.
 
 on:
   workflow_dispatch:
