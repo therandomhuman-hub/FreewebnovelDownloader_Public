@@ -15,10 +15,7 @@ on:
         default: "2"
         type: string
   schedule:
-    - cron: "0 0 * * *"
-  push:
-    branches:
-      - main
+    - cron: "0 0,6,12,18 * * *"
 
 permissions:
   contents: read
@@ -30,8 +27,8 @@ concurrency:
 env:
   PYTHON_VERSION: "3.12"
   BULK_SOURCE_FILE: "data/completed_novels.json"
-  BULK_MAX_RUN_SECONDS: "19800"
-  BULK_RUN_STOP_MARGIN_SECONDS: "300"
+  BULK_MAX_RUN_SECONDS: "21600"
+  BULK_RUN_STOP_MARGIN_SECONDS: "1800"
   BULK_CONCURRENCY: "12"
   BULK_RETRY_ATTEMPTS: "2"
   GOOGLE_COMPLETED_SHEET: "Sheet1"
@@ -137,7 +134,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" \
             --engine-sha "${{ needs.healthcheck.outputs.engine_sha }}"
 
-      - name: Run dynamic six-hour queue
+      - name: Run dynamic six-hour queue (5h30m admission + 30m drain)
         working-directory: private-engine
         env:
           GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
