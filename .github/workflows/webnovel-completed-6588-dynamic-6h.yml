@@ -1,6 +1,6 @@
 name: WebNovel Downloader - Completed 6588 Dynamic 6H
-# Validated private engine: d6d36f5656e52859761ce657592437a26ce4d911
-# Production run restarted after validated private-engine revision 4974c86eb5dd94235bbd0bf10126f24d2b5bb060.
+# The healthcheck validates the current private-engine main revision, then the worker
+# pins that exact validated SHA for the full production run.
 
 on:
   workflow_dispatch:
@@ -79,6 +79,42 @@ jobs:
       - name: Run deterministic tests
         working-directory: private-engine
         run: python -m unittest discover -s tests -v
+
+      - name: Production import smoke test
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib
+          modules = [
+              "bulk_completed_worker",
+              "bulk_validation",
+              "conversion_monitor",
+              "community_library_worker",
+              "community_library_entrypoint",
+              "parallel_community_runner",
+              "community_match",
+              "drive_storage",
+              "drive_source_metadata",
+              "failure_artifacts",
+              "production_audit",
+              "runtime_log",
+              "sitecustomize",
+              "sheet_aggregator",
+              "self_check",
+          ]
+          for name in modules:
+              importlib.import_module(name)
+              print(f"IMPORT_OK {name}")
+          PY
+
+      - name: Deterministic self-tests
+        working-directory: private-engine
+        run: python self_check.py
+
+      - name: Full production audit
+        working-directory: private-engine
+        run: python production_audit.py
 
       - name: Preflight Google Drive OAuth and folder access
         working-directory: private-engine
