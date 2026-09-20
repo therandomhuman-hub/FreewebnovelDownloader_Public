@@ -3,12 +3,6 @@ name: WebNovel Downloader - Completed 6588 Dynamic 6H
 # pins that exact validated SHA for the full production run.
 
 on:
-  # TEMPORARY: push trigger used only for this validated production run.
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/webnovel-completed-6588-dynamic-6h.yml"
   workflow_dispatch:
     inputs:
       concurrency:
