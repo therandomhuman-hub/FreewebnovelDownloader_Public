@@ -1,14 +1,8 @@
 name: WebNovel Downloader - Completed 6588 Dynamic 6H
-# Temporary production-run trigger pass 2.
 # The healthcheck validates the current private-engine main revision, then the worker
 # pins that exact validated SHA for the full production run.
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/production-run-trigger.disabled"
   workflow_dispatch:
     inputs:
       concurrency:
@@ -28,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: webnovel-cleanup-noop
+  group: webnovel-completed-6588-dynamic-6h
   cancel-in-progress: false
 
 env:
@@ -62,7 +56,6 @@ env:
 
 jobs:
   healthcheck:
-    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
