@@ -114,6 +114,9 @@ jobs:
               "runtime_log",
               "sitecustomize",
               "sheet_aggregator",
+              "linktoepub_api",
+              "dynamic_6588_tracker",
+              "dynamic_6588_worker",
               "self_check",
           ]
           for name in modules:
