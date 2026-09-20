@@ -3,6 +3,11 @@ name: WebNovel Downloader - Completed 6588 Dynamic 6H
 # pins that exact validated SHA for the full production run.
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/webnovel-completed-6588-dynamic-6h.yml"
   workflow_dispatch:
     inputs:
       concurrency:
@@ -23,7 +28,7 @@ permissions:
 
 concurrency:
   group: webnovel-completed-6588-dynamic-6h
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHON_VERSION: "3.12"
