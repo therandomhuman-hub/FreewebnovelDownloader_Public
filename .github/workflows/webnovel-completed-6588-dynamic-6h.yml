@@ -129,6 +129,49 @@ jobs:
         working-directory: private-engine
         run: python production_audit.py
 
+      - name: Verify cross-run server-job recovery contract
+        working-directory: private-engine
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          required = {
+              "linktoepub_api.py": ("get_job", "download_job", "LinkToEpubJobNotFound", "LinkToEpubBackendUnavailable"),
+              "dynamic_6588_worker.py": ("recover_existing_server_job", "SERVER_JOB_HANDOFF_SECONDS", "conversion_job_id", "conversion_backend_url"),
+              "conversion_monitor.py": ("_detect_server_job_id", "backendJobId", "_wait_for_server_job"),
+              "dynamic_6588_tracker.py": ("REQUIRED_TRACKER_COLUMNS = 26", "Conversion Job ID", "Conversion Backend URL"),
+          }
+
+          for filename, markers in required.items():
+              text = Path(filename).read_text(encoding="utf-8")
+              missing = [marker for marker in markers if marker not in text]
+              if missing:
+                  raise SystemExit(f"{filename}: missing recovery markers: {missing}")
+              print(f"RECOVERY_CONTRACT_OK {filename}")
+          PY
+
+      - name: Preflight LinkToEPUB recovery backends
+        env:
+          COMMUNITY_BACKEND_URLS: ${{ env.COMMUNITY_BACKEND_URLS }}
+        run: |
+          set -euo pipefail
+          IFS="," read -r -a backends <<< "$COMMUNITY_BACKEND_URLS"
+          healthy=0
+          for raw in "${backends[@]}"; do
+            base="${raw%/}"
+            if [ -z "$base" ]; then
+              continue
+            fi
+            if response="$(curl --fail --silent --show-error --max-time 20 "$base/health")"; then
+              echo "LINKTOEPUB_BACKEND_OK $base $response"
+              healthy=$((healthy + 1))
+            else
+              echo "LINKTOEPUB_BACKEND_UNAVAILABLE $base" >&2
+            fi
+          done
+          test "$healthy" -ge 1
+
       - name: Preflight Google Drive OAuth and folder access
         working-directory: private-engine
         env:
