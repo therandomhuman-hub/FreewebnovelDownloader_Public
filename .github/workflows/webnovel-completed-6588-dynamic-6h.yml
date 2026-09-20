@@ -1,4 +1,5 @@
 name: WebNovel Downloader - Completed 6588 Dynamic 6H
+# Temporary production-run trigger pass.
 # The healthcheck validates the current private-engine main revision, then the worker
 # pins that exact validated SHA for the full production run.
 
