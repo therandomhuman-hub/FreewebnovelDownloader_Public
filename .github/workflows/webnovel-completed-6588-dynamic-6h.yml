@@ -140,8 +140,8 @@ jobs:
           from pathlib import Path
 
           required = {
-              "linktoepub_api.py": ("get_job", "download_job", "LinkToEpubJobNotFound", "LinkToEpubBackendUnavailable"),
-              "dynamic_6588_worker.py": ("recover_existing_server_job", "SERVER_JOB_HANDOFF_SECONDS", "conversion_job_id", "conversion_backend_url"),
+              "linktoepub_api.py": ("start_job", "cancel_job", "get_job", "download_job", "LinkToEpubJobNotFound", "LinkToEpubBackendUnavailable"),
+              "dynamic_6588_worker.py": ("start_new_server_job", "recover_existing_server_job", "SERVER_JOB_HANDOFF_SECONDS", "conversion_job_id", "conversion_backend_url"),
               "conversion_monitor.py": ("_detect_server_job_id", "backendJobId", "_wait_for_server_job"),
               "dynamic_6588_tracker.py": ("REQUIRED_TRACKER_COLUMNS = 26", "Conversion Job ID", "Conversion Backend URL"),
           }
