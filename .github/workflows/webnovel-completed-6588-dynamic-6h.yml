@@ -167,8 +167,12 @@ jobs:
               continue
             fi
             if response="$(curl --fail --silent --show-error --max-time 20 "$base/health")"; then
-              echo "LINKTOEPUB_BACKEND_OK $base $response"
-              healthy=$((healthy + 1))
+              if printf '%s' "$response" | jq -e 'type == "object" and .ok == true' >/dev/null 2>&1; then
+                echo "LINKTOEPUB_BACKEND_OK $base $response"
+                healthy=$((healthy + 1))
+              else
+                echo "LINKTOEPUB_BACKEND_NOT_READY $base (health endpoint did not return JSON with ok=true)" >&2
+              fi
             else
               echo "LINKTOEPUB_BACKEND_UNAVAILABLE $base" >&2
             fi
