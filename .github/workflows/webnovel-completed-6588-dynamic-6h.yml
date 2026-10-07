@@ -208,7 +208,10 @@ jobs:
         with:
           repository: therandomhuman-hub/FreewebnovelDownloader_Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: ${{ needs.healthcheck.outputs.engine_sha }}
+          # Pin the exact private-engine revision containing the tracker
+          # snapshot atomic-write fix, so the worker cannot run the older
+          # shared-temp-file implementation that crashed run 37564085230.
+          ref: 60ae4d33870dd976bf45b6fd417c3869990f1e6c
           path: private-engine
           persist-credentials: false
 
@@ -232,7 +235,7 @@ jobs:
           python dynamic_6588_tracker.py init \
             --catalog "$BULK_SOURCE_FILE" \
             --run-id "$GITHUB_RUN_ID" \
-            --engine-sha "${{ needs.healthcheck.outputs.engine_sha }}"
+            --engine-sha "60ae4d33870dd976bf45b6fd417c3869990f1e6c"
 
       - name: Run dynamic six-hour queue (5h30m admission + 30m drain)
         working-directory: private-engine
